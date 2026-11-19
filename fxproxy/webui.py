@@ -66,7 +66,7 @@ def _pick_free_ports(start: int = 18095, span: int = 200) -> tuple[int, int]:
         port += 2
     raise RuntimeError(f"从 {start} 起找不到一对空闲端口，测速跳过")
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">

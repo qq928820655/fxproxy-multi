@@ -58,6 +58,15 @@ def build_clash_yaml(
         f'      - "{sname}"\n'
         "      - DIRECT\n"
         "rules:\n"
+        # 必须先排除本机/内网，否则某些客户端会把「连本地代理端口」
+        # 也当普通流量走 MATCH,PROXY，造成 127.0.0.1:7890 自环 →
+        # ERR_EMPTY_RESPONSE。别的订阅都带这类规则，我们也补上。
+        "  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve\n"
+        "  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve\n"
+        "  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve\n"
+        "  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve\n"
+        "  - IP-CIDR,100.64.0.0/10,DIRECT,no-resolve\n"
+        "  - IP-CIDR6,::1/128,DIRECT,no-resolve\n"
         "  - MATCH,PROXY\n"
     )
 
