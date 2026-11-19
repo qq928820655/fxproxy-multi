@@ -264,6 +264,15 @@ async def main():
             ex2 = await r.json()
             check([a["refresh_token"] for a in ex2["accounts"]] == ["tokB", "tokC"],
                   "多选导出顺序正确")
+            r = await cli.post("/api/accounts/export",
+                               json={"indices": [0, 1], "mode": "token"})
+            ex3 = await r.json()
+            check(ex3.get("format") == "fxproxy-refresh-tokens"
+                  and ex3["refresh_tokens"] == ["tokB", "tokC"],
+                  "token 模式导出 refresh_tokens")
+            r = await cli.post("/api/accounts/export",
+                               json={"indices": [0], "mode": "session"})
+            check(r.status == 400, "session 模式不可导出并报错")
             # 导出格式应能被导入解析器读回（refresh_token 归入 refresh 桶）
             from fxproxy import cookieutil
             hexrt = "a" * 64

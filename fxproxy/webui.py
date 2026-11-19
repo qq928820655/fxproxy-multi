@@ -98,6 +98,16 @@ PAGE = r"""<!doctype html>
   button.danger { background:#3d1b1b; border-color:#8b3a3a; color:#ff9b9b; }
   button.sm { padding:5px 10px; font-size:12px; }
   button:disabled { opacity:.5; cursor:not-allowed; }
+  .dropdown { position:relative; display:inline-block; }
+  .dropdown .menu { display:none; position:absolute; right:0; top:calc(100% + 4px);
+          min-width:180px; background:#161b22; border:1px solid #30363d; border-radius:6px;
+          box-shadow:0 8px 24px rgba(0,0,0,.5); z-index:20; overflow:hidden; }
+  .dropdown.open .menu { display:block; }
+  .dropdown .menu button { display:block; width:100%; text-align:left; border:0;
+          border-radius:0; background:transparent; padding:8px 12px; font-size:13px; }
+  .dropdown .menu button:hover:not(:disabled) { background:#21262d; }
+  .dropdown .menu button:disabled { opacity:.45; cursor:not-allowed; }
+  .dropdown .menu .hint { color:#8b949e; font-size:11px; padding:0 12px 6px; }
   .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px;
           font-weight:600; white-space:nowrap; }
   .on { background:#238636; color:#fff; }
@@ -321,7 +331,15 @@ PAGE = r"""<!doctype html>
       <button id="strategyBtn" class="sm">应用策略</button>
       <button id="refreshQuotaBtn" class="sm">刷新配额</button>
       <button id="selAllBtn" class="sm">全选</button>
-      <button id="exportBtn" class="sm" disabled>导出选中</button>
+      <div class="dropdown" id="exportDd">
+        <button id="exportBtn" class="sm" disabled>导出选中 ▾</button>
+        <div class="menu" id="exportMenu">
+          <button data-mode="token">refresh_token</button>
+          <button data-mode="cookie">Cookie / 插件导出</button>
+          <button data-mode="password" disabled title="登录后仅保存 refresh_token，未保存密码">邮箱 + 密码（不可用）</button>
+          <button data-mode="session" disabled title="登录后仅保存 refresh_token，未保存 sessionToken">sessionToken（不可用）</button>
+        </div>
+      </div>
       <button id="addToggle" class="primary sm">+ 添加账号</button>
     </div>
     <div class="row" style="margin-bottom:12px;">
@@ -733,7 +751,7 @@ function onSel(i, on){ if(on) SELECTED.add(i); else SELECTED.delete(i); updateSe
 function updateSelUI(){
   const n = SELECTED.size;
   const b = $("exportBtn");
-  if(b){ b.disabled = n===0; b.textContent = n? ("导出选中 ("+n+")") : "导出选中"; }
+  if(b){ b.disabled = n===0; b.textContent = n? ("导出选中 ("+n+") ▾") : "导出选中 ▾"; }
   const all = $("selAll");
   if(all){ all.checked = n>0 && n===ACCT_TOTAL; all.indeterminate = n>0 && n<ACCT_TOTAL; }
 }
@@ -744,20 +762,35 @@ function selectAll(on){
 }
 $("selAll").onchange = () => selectAll($("selAll").checked);
 $("selAllBtn").onclick = () => selectAll(SELECTED.size !== ACCT_TOTAL);
-$("exportBtn").onclick = async () => {
+$("exportBtn").onclick = (e) => {
+  e.stopPropagation();
+  if($("exportBtn").disabled) return;
+  $("exportDd").classList.toggle("open");
+};
+document.addEventListener("click", (e) => {
+  if(!e.target.closest("#exportDd")) $("exportDd").classList.remove("open");
+});
+$("exportMenu").querySelectorAll("button").forEach(btn => {
+  btn.onclick = () => {
+    if(btn.disabled) return;
+    $("exportDd").classList.remove("open");
+    doExport(btn.dataset.mode);
+  };
+});
+async function doExport(mode){
   const idx = Array.from(SELECTED).sort((a,b)=>a-b);
   if(!idx.length){ alert("请先勾选账号"); return; }
   const r = await fetch("/api/accounts/export",{method:"POST",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify({indices:idx})});
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({indices:idx, mode:mode})});
   const d = await r.json();
   if(d.error){ alert("导出失败："+d.error); return; }
   const blob = new Blob([JSON.stringify(d,null,2)],{type:"application/json"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "fxproxy-accounts-"+new Date().toISOString().slice(0,10)+".json";
+  a.download = "fxproxy-"+mode+"-"+new Date().toISOString().slice(0,10)+".json";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
-};
+}
 async function loadAccounts(){
   try{
     const r = await timeoutFetch("/api/accounts", null, 25000); const d = await r.json();
@@ -1399,16 +1432,23 @@ class Panel:
         return web.json_response({"ok": True})
 
     async def api_accounts_export(self, req):
-        """Export selected accounts (by index) as a JSON doc that the cookie
-        import can read back: ``accounts[]`` with uid/email/refresh_token.
-        ``_walk_json`` maps the ``refresh_token`` keys into the refresh list,
-        so the same text can be pasted straight into 添加账号 → Cookie 模式."""
+        """Export selected accounts (by index) in one of the import formats.
+
+        ``mode`` mirrors the 添加账号 dropdown:
+          token    -> {"refresh_tokens": [...]}          (直接粘贴 refresh_token)
+          cookie   -> {"accounts": [{uid,email,refresh_token}]}  (Cookie 导入可读回)
+        password/session 登录后不保留原始密码/sessionToken，无法导出。"""
         if self.pool is None or not self.pool.clients:
             return web.json_response({"error": "无账号"}, status=400)
         try:
             body = await req.json()
         except Exception:
             body = {}
+        mode = body.get("mode") or "cookie"
+        if mode in ("password", "session"):
+            return web.json_response({
+                "error": "登录后仅保留 refresh_token，未保存密码/sessionToken，"
+                         "请改用 refresh_token 或 Cookie 导出"}, status=400)
         n = len(self.pool.clients)
         raw = body.get("indices")
         if raw is None:
@@ -1432,6 +1472,13 @@ class Panel:
                 "uid": getattr(c, "_uid", None),
                 "email": getattr(c, "_email", None),
                 "refresh_token": c.refresh_token,
+            })
+        if mode == "token":
+            return web.json_response({
+                "format": "fxproxy-refresh-tokens",
+                "version": 1,
+                "exported_at": int(time.time()),
+                "refresh_tokens": [a["refresh_token"] for a in accounts],
             })
         return web.json_response({
             "format": "fxproxy-accounts",
