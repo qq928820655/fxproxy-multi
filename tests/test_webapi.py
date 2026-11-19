@@ -332,7 +332,9 @@ async def main():
                 async with TestClient(TestServer(app2)) as c2:
                     y2 = await (await c2.get("/clash.yaml")).text()
                 check('server: "198.51.100.7"' in y2, "env 订阅 server 覆盖 Host 头")
-                check("port: 18080" in y2 and "port: 11080" in y2, "env 订阅端口覆盖")
+                check("port: 443" in y2, "per-node vless 走 443")
+                check("fxproxy-http" not in y2 and "fxproxy-socks5" not in y2,
+                      "有 vless 节点时不导出网关裸端口代理")
                 check("127.0.0.1" not in y2, "env 订阅不含本地地址")
         finally:
             for k in ("FXPROXY_SUB_SERVER", "FXPROXY_SUB_HTTP_PORT", "FXPROXY_SUB_SOCKS_PORT"):

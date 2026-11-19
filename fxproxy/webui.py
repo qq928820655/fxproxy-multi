@@ -111,6 +111,10 @@ PAGE = """<!doctype html>
   td.lat-mid  { color:#d29922; font-weight:600; }
   td.lat-slow { color:#e3853c; font-weight:600; }
   td.lat-fail { color:#f85149; font-weight:600; }
+  th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sortable:hover { color:#c9d1d9; }
+  th.sortable .arrow { color:#484f58; margin-left:3px; font-size:10px; }
+  th.sortable.on .arrow { color:#58a6ff; }
 </style>
 </head>
 <body>
@@ -190,7 +194,14 @@ PAGE = """<!doctype html>
     </div>
     <div class="nodescroll">
       <table>
-        <thead><tr><th>国家</th><th>节点主机</th><th>端口</th><th>延迟</th><th>带宽</th><th></th></tr></thead>
+        <thead><tr>
+          <th class="sortable" data-key="name" onclick="sortNodes('name')">国家<span class="arrow"></span></th>
+          <th class="sortable" data-key="host" onclick="sortNodes('host')">节点主机<span class="arrow"></span></th>
+          <th class="sortable" data-key="port" onclick="sortNodes('port')">端口<span class="arrow"></span></th>
+          <th class="sortable" data-key="latency" onclick="sortNodes('latency')">延迟<span class="arrow"></span></th>
+          <th class="sortable" data-key="bandwidth" onclick="sortNodes('bandwidth')">带宽<span class="arrow"></span></th>
+          <th></th>
+        </tr></thead>
         <tbody id="nodeBody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
       </table>
     </div>
@@ -310,6 +321,63 @@ function latText(n){
   if(n.ok === false || n.latency_ms == null) return "超时";
   return n.latency_ms + " ms";
 }
+let NODE_DATA = [], NODE_PROBE = false;
+let SORT = {key:null, dir:1};
+function _sortVal(n,key){
+  if(key==="port") return Number(n.port)||0;
+  if(key==="latency") return (n.ok===false||n.latency_ms==null)?0:n.latency_ms;
+  if(key==="bandwidth") return (n.mbps==null)?0:n.mbps;
+  if(key==="name") return n.name||"";
+  if(key==="host") return n.host||"";
+  return 0;
+}
+function _sortUnknown(n,key){
+  if(key==="latency") return n.ok===false||n.latency_ms==null;
+  if(key==="bandwidth") return n.mbps==null;
+  return false;
+}
+function renderNodeRows(){
+  const body = $("nodeBody");
+  let arr = NODE_DATA.slice();
+  if(SORT.key){
+    arr.sort((a,b)=>{
+      const ua=_sortUnknown(a,SORT.key), ub=_sortUnknown(b,SORT.key);
+      if(ua!==ub) return ua?1:-1;
+      const va=_sortVal(a,SORT.key), vb=_sortVal(b,SORT.key);
+      let c = (typeof va==="string") ? va.localeCompare(vb,"zh-Hans")
+                                     : (va<vb?-1:va>vb?1:0);
+      return c*SORT.dir;
+    });
+  }
+  const probe = NODE_PROBE;
+  const rows = arr.map(n => {
+    const lat = `<td class="${latClass(n)}">${probe?latText(n):"—"}</td>`;
+    const mb = n.mbps;
+    let bw = `<td id="bw-${n.host}" class="muted">—</td>`;
+    if(mb != null){
+      bw = mb >= 5
+        ? `<td><span class="${mb>=15?'pill on':''}" style="${mb>=15||mb<5?'':'color:#d29922'}" id="bw-${n.host}">${mb} Mbps</span></td>`
+        : `<td><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
+    }
+    const cur = (n.host === CURRENT_NODE);
+    const ipLine = n.egress_ip ? `<div class="muted" style="font-size:11px;">出口 ${n.egress_ip}</div>` : '';
+    return `<tr${cur?' style="background:#123329;"':''}><td>${n.name}${cur?' <span class="pill on">当前</span>':''}</td><td>${n.host}${ipLine}</td><td>${n.port}</td>${lat}${bw}`+
+      `<td><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
+      `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button></td></tr>`;
+  });
+  body.innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无节点</td></tr>';
+  document.querySelectorAll("th.sortable").forEach(th=>{
+    const on = th.dataset.key===SORT.key;
+    th.classList.toggle("on", on);
+    const a = th.querySelector(".arrow");
+    if(a) a.textContent = on ? (SORT.dir>0?"▲":"▼") : "";
+  });
+}
+function sortNodes(key){
+  if(SORT.key===key) SORT.dir = -SORT.dir;
+  else { SORT.key = key; SORT.dir = 1; }
+  renderNodeRows();
+}
 async function loadNodes(probe, egress){
   const btn = $("probeBtn"), ebtn = $("egressBtn"), body = $("nodeBody");
   if(probe){ btn.disabled = true; btn.textContent = "探测中…";
@@ -321,30 +389,16 @@ async function loadNodes(probe, egress){
     const r = await fetch("/api/nodes"+qs);
     const d = await r.json();
     if(d.error){ body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
-    const rows = (d.nodes||[]).map(n => {
-      let lat = `<td class="${latClass(n)}">${probe?latText(n):"—"}</td>`;
-      const mb = n.mbps;
-      let bw = `<td id="bw-${n.host}" class="muted">—</td>`;
-      if(mb != null){
-        const cls = mb >= 15 ? '"pill on"' : (mb >= 5 ? '" style="color:#d29922' : '"pill off"');
-        bw = mb >= 5 ? `<td><span class=${cls} id="bw-${n.host}">${mb} Mbps</span></td>`
-                     : `<td><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
-      }
-      const cur = (n.host === CURRENT_NODE);
-      const ipLine = n.egress_ip ? `<div class="muted" style="font-size:11px;">出口 ${n.egress_ip}</div>` : '';
-      return `<tr${cur?' style="background:#123329;"':''}><td>${n.name}${cur?' <span class="pill on">当前</span>':''}</td><td>${n.host}${ipLine}</td><td>${n.port}</td>${lat}${bw}`+
-        `<td><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
-        `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button></td></tr>`;
-    });
-    body.innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无节点</td></tr>';
-    $("nodeCount").textContent = "("+(d.nodes||[]).length+" 个)";
+    NODE_DATA = d.nodes||[]; NODE_PROBE = !!probe;
+    renderNodeRows();
+    $("nodeCount").textContent = "("+NODE_DATA.length+" 个)";
     if(probe){
-      const ok = (d.nodes||[]).filter(n=>n.ok).length;
-      $("probeMsg").textContent = "可达 "+ok+"/"+(d.nodes||[]).length;
+      const ok = NODE_DATA.filter(n=>n.ok).length;
+      $("probeMsg").textContent = "可达 "+ok+"/"+NODE_DATA.length;
     }
     if(egress){
-      const got = (d.nodes||[]).filter(n=>n.egress_ip).length;
-      $("probeMsg").textContent = "出口 IP 已探测 "+got+"/"+(d.nodes||[]).length;
+      const got = NODE_DATA.filter(n=>n.egress_ip).length;
+      $("probeMsg").textContent = "出口 IP 已探测 "+got+"/"+NODE_DATA.length;
     }
   }catch(e){
     body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+e+'</td></tr>';
@@ -375,6 +429,8 @@ async function testNode(host){
     const cls = d.mbps>=15 ? "pill on" : (d.mbps>=5 ? "" : "pill off");
     bw.className = cls; bw.style.color = d.mbps>=15||d.mbps<5 ? "" : "#d29922";
     bw.textContent = d.mbps+" Mbps";
+    const row = NODE_DATA.find(n=>n.host===host);
+    if(row){ row.mbps = d.mbps; }
   }
 }
 
@@ -1529,11 +1585,11 @@ class Panel:
                     per_node.append(
                         f"  - name: \"fxproxy-{code}-{name}\"\n"
                         "    type: vless\n"
-                        f"    server: {server}\n"
+                        f"    server: \"{server}\"\n"
                         "    port: 443\n"
                         f"    uuid: {self._bridge_uuid()}\n"
                         "    tls: true\n"
-                        f"    servername: {server}\n"
+                        f"    servername: \"{server}\"\n"
                         "    network: ws\n"
                         "    ws-opts:\n"
                         f"      path: /vless/{nh}\n"
@@ -1543,11 +1599,11 @@ class Panel:
                 per_node.append(
                     "  - name: \"fxproxy-vless-ws\"\n"
                     "    type: vless\n"
-                    f"    server: {server}\n"
+                    f"    server: \"{server}\"\n"
                     "    port: 443\n"
                     f"    uuid: {self._bridge_uuid()}\n"
                     "    tls: true\n"
-                    f"    servername: {server}\n"
+                    f"    servername: \"{server}\"\n"
                     "    network: ws\n"
                     "    ws-opts:\n"
                     "      path: /vless\n"
