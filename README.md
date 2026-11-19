@@ -27,6 +27,57 @@ access_token  ──GET /api/v1/fpn/token──▶ proxy pass JWT(~10min)
 - **服务器列表**：公开于 Remote Settings 的 `vpn-serverlist`，按国家挑节点。
 - proxy pass 会在过期前自动续期。
 
+## 多账号池（本分支改动）
+
+原版配置只有单个 `refresh_token`，一个账号每月 50GB。本分支把账号做成池，
+多个账号共用一个本地代理入口，总量叠加（N 个账号 ≈ N×50GB/月）。
+
+配置（`config.json`）：
+
+```json
+{
+  "refresh_tokens": ["TOKEN_1", "TOKEN_2", "TOKEN_3"],
+  "pool_strategy": "round-robin",
+  "cooldown_seconds": 300,
+  "quota_cache_ttl": 60,
+  "country": "",
+  "host": "127.0.0.1",
+  "http_port": 8080,
+  "socks_port": 1080,
+  "failover": 3
+}
+```
+
+- `refresh_tokens`：账号列表。老的 `refresh_token` 单字段仍兼容，load 时自动转成列表第一项；save 时两个字段都写。
+- `pool_strategy`：
+  - `round-robin`（默认）——每条连接按顺序轮换账号，均匀分摊。
+  - `quota`——按剩余流量加权，剩余多的账号被选中概率更高（配额快照 TTL 缓存，不阻塞热路径）。
+  - `failover`——固定用第一个账号，只有失败/冷却才切下一个（主备）。
+- `cooldown_seconds`：账号鉴权失败（401/403）或取凭证失败后冷却秒数，冷却期内不被选中；全部账号都在冷却时忽略冷却，避免全停。
+- `quota_cache_ttl`：配额快照缓存秒数。
+
+命令：
+
+```bash
+fxproxy login --email a@example.com --append   # 追加账号到池（不加 --append 则覆盖）
+fxproxy accounts                               # 列出每个账号 uid / 配额 / 冷却状态
+fxproxy status                                 # 聚合配额
+fxproxy token -q                               # 每行输出一个 token，顺序对应账号 #1..#N
+fxproxy run                                    # 单入口，池内按策略调度
+```
+
+面板（`fxproxy web`）里可以追加账号、删除账号、切换策略、刷新配额、看每个账号的用量条和总剩余。
+
+两级故障切换：每条连接先由池按策略排出账号顺序，每个账号用自己的 proxy pass 试 `failover` 个节点。
+节点网络失败 → 换节点；账号鉴权失败（401/403）→ 冷却该账号并换下一个账号。
+
+环境变量（免改文件，适合服务器/容器）：
+
+```bash
+FXPROXY_REFRESH_TOKENS="token1,token2,token3"   # 批量（逗号/换行/分号分隔）
+FXPROXY_REFRESH_TOKEN="token1"                  # 单个，优先级最高，置顶
+```
+
 ## 安装
 
 ```bash

@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import base64
 import json
+import random
 import threading
 import time
+import itertools
 from typing import Optional
 
 import requests
@@ -216,3 +218,215 @@ class GuardianClient:
             if nodes:
                 out[rec["code"]] = {"name": rec.get("name", rec["code"]), "nodes": nodes}
         return out
+
+
+# ---------------------------------------------------------------------------
+# Multi-account scheduling
+# ---------------------------------------------------------------------------
+
+class TokenPool:
+    """A pool of GuardianClients with pluggable per-connection selection.
+
+    Strategies:
+      * ``round-robin`` — cycle through accounts (default, even spread).
+      * ``quota``       — weight by remaining bytes, refreshed on a TTL cache.
+      * ``failover``    — stick to account #0, move down only on failure.
+
+    A failing account is put in cooldown for ``cooldown`` seconds; if every
+    account is cooling down we ignore the cooldown and use them all (better a
+    retry than a hard outage). All state is guarded by ``_lock`` because the
+    proxy serves connections from many asyncio tasks via ``to_thread``.
+    """
+
+    STRATEGIES = ("round-robin", "quota", "failover")
+
+    def __init__(
+        self,
+        tokens: list[str],
+        strategy: str = "round-robin",
+        cooldown: int = 300,
+        quota_cache_ttl: int = 60,
+        session: Optional[requests.Session] = None,
+    ):
+        if not tokens:
+            raise ValueError("TokenPool needs at least one refresh_token")
+        if strategy not in self.STRATEGIES:
+            raise ValueError(f"unknown strategy {strategy!r}; choose {self.STRATEGIES}")
+        self.strategy = strategy
+        self.cooldown = max(1, int(cooldown))
+        self.quota_cache_ttl = max(0, int(quota_cache_ttl))
+        self._lock = threading.RLock()
+        self._rr = itertools.count()
+        self._cool_until: dict[int, float] = {}     # client index -> monotonic deadline
+        self._quota_cache: dict[int, tuple[float, dict]] = {}
+        # One shared Session for the whole pool: fewer TCP/TLS handshakes.
+        self._session = session or requests.Session()
+        self.clients: list[GuardianClient] = [
+            GuardianClient(t, session=self._session) for t in tokens
+        ]
+
+    # ---- account mutation ---------------------------------------------
+    @property
+    def tokens(self) -> list[str]:
+        return [c.refresh_token for c in self.clients]
+
+    def add(self, token: str) -> int:
+        token = (token or "").strip()
+        if not token:
+            raise ValueError("empty refresh_token")
+        with self._lock:
+            if token in self.tokens:
+                raise ValueError("该账号已在池中")
+            self.clients.append(GuardianClient(token, session=self._session))
+            return len(self.clients) - 1
+
+    def remove(self, index: int) -> None:
+        with self._lock:
+            if not 0 <= index < len(self.clients):
+                raise IndexError(f"账号序号 {index} 不存在")
+            if len(self.clients) == 1:
+                raise ValueError("至少保留一个账号")
+            self.clients.pop(index)
+            # 索引平移：重建冷却表和配额缓存
+            self._cool_until = {}
+            self._quota_cache = {}
+
+    def set_strategy(self, strategy: str) -> None:
+        if strategy not in self.STRATEGIES:
+            raise ValueError(f"unknown strategy {strategy!r}; choose {self.STRATEGIES}")
+        with self._lock:
+            self.strategy = strategy
+
+    # ---- cooldown / selection -----------------------------------------
+    def report_failure(self, client: GuardianClient) -> None:
+        """Put an account in cooldown after a connect/auth failure."""
+        with self._lock:
+            try:
+                idx = self.clients.index(client)
+            except ValueError:
+                return
+            self._cool_until[idx] = time.monotonic() + self.cooldown
+            # stale quota makes the weight unreliable; drop it
+            self._quota_cache.pop(idx, None)
+            _pool_log(f"账号 #{idx + 1} 失败，冷却 {self.cooldown}s")
+
+    def _healthy(self) -> list[int]:
+        now = time.monotonic()
+        with self._lock:
+            out = [i for i in range(len(self.clients))
+                   if self._cool_until.get(i, 0) <= now]
+            # All cooling -> use everyone rather than refusing service.
+            return out or list(range(len(self.clients)))
+
+    def pick(self) -> tuple[int, GuardianClient]:
+        """Choose one account. Returns ``(index, client)``."""
+        with self._lock:
+            healthy = self._healthy()
+            if self.strategy == "failover":
+                idx = healthy[0]
+            elif self.strategy == "quota":
+                idx = self._pick_by_quota(healthy)
+            else:  # round-robin
+                # next() is atomic under GIL, but keep it under the lock for clarity.
+                idx = next(self._rr) % len(healthy)
+                idx = healthy[idx]
+            return idx, self.clients[idx]
+
+    def pick_many(self, n: int) -> list[tuple[int, GuardianClient]]:
+        """Up to n distinct accounts for cross-account failover."""
+        with self._lock:
+            healthy = self._healthy()
+            order: list[int]
+            if self.strategy == "quota":
+                # Best first, then the rest in current pool order.
+                first = self._pick_by_quota(healthy)
+                order = [first] + [i for i in healthy if i != first]
+            elif self.strategy == "failover":
+                order = list(healthy)
+            else:
+                start = next(self._rr) % len(healthy)
+                order = healthy[start:] + healthy[:start]
+            return [(i, self.clients[i]) for i in order[:max(1, n)]]
+
+    def _pick_by_quota(self, healthy: list[int]) -> int:
+        """Weighted pick by remaining bytes; equal weight when cache is cold."""
+        now = time.monotonic()
+        weights: list[float] = []
+        for i in healthy:
+            cached = self._quota_cache.get(i)
+            if cached and cached[0] >= now:
+                rem = cached[1].get("remaining_bytes")
+                # +1 keeps an exhausted (0) account in the draw, just unlikely.
+                weights.append(max(1.0, float(rem or 0)))
+            else:
+                weights.append(1.0)
+        total = sum(weights)
+        r = random.random() * total
+        acc = 0.0
+        for i, w in zip(healthy, weights):
+            acc += w
+            if r <= acc:
+                return i
+        return healthy[-1]
+
+    # ---- quota ---------------------------------------------------------
+    def refresh_quotas(self) -> list[dict]:
+        """Fetch every account's quota, cache it, return snapshots."""
+        out: list[dict] = []
+        now = time.monotonic()
+        with self._lock:
+            clients = list(self.clients)
+        for i, c in enumerate(clients):
+            try:
+                q = c.quota()
+                q["ok"] = True
+            except Exception as e:
+                q = {"uid": None, "remaining_bytes": None, "max_bytes": 0,
+                     "reset": None, "unlimited": False, "ok": False, "error": str(e)}
+            with self._lock:
+                self._quota_cache[i] = (now + self.quota_cache_ttl, q)
+            out.append(q)
+        return out
+
+    def quota_snapshot(self) -> list[dict]:
+        """Return cached quota snapshots; refresh only stale entries."""
+        now = time.monotonic()
+        with self._lock:
+            clients = list(self.clients)
+            stale = [i for i in range(len(clients))
+                     if not (self._quota_cache.get(i) and self._quota_cache[i][0] >= now)]
+        for i in stale:
+            c = clients[i]
+            try:
+                q = c.quota()
+                q["ok"] = True
+            except Exception as e:
+                q = {"uid": None, "remaining_bytes": None, "max_bytes": 0,
+                     "reset": None, "unlimited": False, "ok": False, "error": str(e)}
+            with self._lock:
+                self._quota_cache[i] = (now + self.quota_cache_ttl, q)
+        with self._lock:
+            return [dict(self._quota_cache[i][1]) if i in self._quota_cache
+                    else {"uid": None, "remaining_bytes": None, "max_bytes": 0,
+                          "ok": False, "error": "no snapshot yet"}
+                    for i in range(len(clients))]
+
+    def summary(self) -> dict:
+        """Aggregate quota across accounts for the CLI/panel."""
+        snaps = self.quota_snapshot()
+        totals = [s.get("remaining_bytes") for s in snaps
+                  if s.get("ok") and s.get("remaining_bytes") is not None]
+        unlimited = any(s.get("unlimited") for s in snaps)
+        return {
+            "accounts": len(snaps),
+            "ok_accounts": sum(1 for s in snaps if s.get("ok")),
+            "snapshots": snaps,
+            "total_remaining_bytes": (None if unlimited or not totals else sum(totals)),
+            "unlimited": unlimited,
+            "strategy": self.strategy,
+        }
+
+
+def _pool_log(msg: str):
+    print(f"[fxproxy:pool] {msg}", flush=True)
+

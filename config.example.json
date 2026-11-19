@@ -1,5 +1,11 @@
 {
-  "refresh_token": "PASTE_APPS_VPN_REFRESH_TOKEN_HERE",
+  "refresh_tokens": [
+    "PASTE_FIRST_REFRESH_TOKEN_HERE",
+    "PASTE_SECOND_REFRESH_TOKEN_HERE"
+  ],
+  "pool_strategy": "round-robin",
+  "cooldown_seconds": 300,
+  "quota_cache_ttl": 60,
   "country": "",
   "host": "127.0.0.1",
   "http_port": 8080,

@@ -14,9 +14,13 @@ import ssl
 import struct
 from typing import Optional
 
-from .guardian import GuardianClient
+from .guardian import GuardianClient, TokenPool
 
 FASTLY_CONNECT_TIMEOUT = 20
+
+
+class AccountAuthFailure(ConnectionError):
+    """The account's proxy pass was rejected (401/403) — cool down that account."""
 
 
 class NodePicker:
@@ -57,14 +61,20 @@ class NodePicker:
 class ProxyServer:
     def __init__(
         self,
-        client: GuardianClient,
+        client,  # TokenPool | GuardianClient
         node_picker: NodePicker,
         host: str = "127.0.0.1",
         http_port: int = 8080,
         socks_port: int = 1080,
         failover: int = 3,
     ):
-        self.client = client
+        # 兼容旧调用：传单个 GuardianClient 时包成单账号池
+        if isinstance(client, TokenPool):
+            self.pool = client
+            self.client = client.clients[0]
+        else:
+            self.pool = TokenPool([client.refresh_token], session=client._s)
+            self.client = client
         self.picker = node_picker
         self.host = host
         self.http_port = http_port
@@ -101,24 +111,50 @@ class ProxyServer:
                 writer.close()
             except Exception:
                 pass
+            # 401/403 = 账号凭证/配额问题，冷却账号；其它 = 节点问题，只换节点
+            if " 401 " in status_line or " 403 " in status_line:
+                raise AccountAuthFailure(f"CONNECT via {node_host}: {status_line}")
             raise ConnectionError(f"CONNECT via {node_host}: {status_line}")
         leftover = head.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in head else b""
         return reader, writer, leftover, node_host
 
     async def _open_tunnel(self, target_host: str, target_port: int):
-        """Open a tunnel, trying several nodes for resilience."""
-        jwt = await asyncio.to_thread(self.client.proxy_pass)
-        nodes = self.picker.pick_many(self.failover)
+        """Open a tunnel with two-level failover: accounts × nodes.
+
+        The pool picks an account order (strategy-dependent). For each account
+        we mint its own proxy pass and try several nodes. A node-level failure
+        just rotates nodes; an auth failure (401/403) cools down that account
+        and moves to the next one. Complexity: O(accounts × failover) attempts,
+        bounded by the pool size to avoid one request hammering every account.
+        """
+        accounts = self.pool.pick_many(len(self.pool.clients))
         last_err = None
-        for node_host, node_port in nodes:
+        tried_nodes = 0
+        for acct_idx, gc in accounts:
             try:
-                return await self._connect_one(
-                    node_host, node_port, target_host, target_port, jwt
-                )
+                jwt = await asyncio.to_thread(gc.proxy_pass)
             except Exception as e:
                 last_err = e
-                _log(f"节点 {node_host} 连接失败（{e!r}），尝试下一个")
-        raise ConnectionError(f"{len(nodes)} 个节点全部失败: {last_err!r}")
+                self.pool.report_failure(gc)
+                _log(f"账号 #{acct_idx + 1} 取凭证失败（{e!r}），换下一个账号")
+                continue
+            nodes = self.picker.pick_many(self.failover)
+            for node_host, node_port in nodes:
+                tried_nodes += 1
+                try:
+                    return await self._connect_one(
+                        node_host, node_port, target_host, target_port, jwt
+                    )
+                except AccountAuthFailure as e:
+                    # 账号级失败：冷却账号，不再试这个账号的其它节点
+                    last_err = e
+                    self.pool.report_failure(gc)
+                    _log(f"账号 #{acct_idx + 1} 鉴权失败（{e!r}），换下一个账号")
+                    break
+                except Exception as e:
+                    last_err = e
+                    _log(f"节点 {node_host} 连接失败（{e!r}），尝试下一个")
+        raise ConnectionError(f"{tried_nodes} 次尝试全部失败: {last_err!r}")
 
     @staticmethod
     async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -293,7 +329,15 @@ class ProxyServer:
     async def start(self):
         """Start listeners and return once they're bound (non-blocking)."""
         self.picker.refresh()
-        await asyncio.to_thread(self.client.proxy_pass)
+        # 预热各账号凭证：失败账号进冷却，成功的账号立即可用
+        def _prime():
+            for _, gc in self.pool.pick_many(len(self.pool.clients)):
+                try:
+                    gc.proxy_pass()
+                except Exception as e:
+                    self.pool.report_failure(gc)
+                    _log(f"账号启动预热失败: {e!r}")
+        await asyncio.to_thread(_prime)
         self._http_srv = await asyncio.start_server(
             self._handle_http, self.host, self.http_port
         )
