@@ -1593,6 +1593,17 @@ class Panel:
                         + marker + lb_group
                         + tail.replace('      - "fxproxy-http"\n',
                                        new_group, 1))
+                # 有内置 vless 节点时，彻底移除指向网关裸端口的
+                # http/socks5 代理。它们只在本地直连场景可用，走公网
+                # 网关时 TCP 能握手但代理语义无响应，客户端选中就是
+                # ERR_EMPTY_RESPONSE。provider 模式也会导出它们，属陷阱。
+                import re as _re
+                for _dead in ("fxproxy-http", "fxproxy-socks5"):
+                    text = _re.sub(
+                        r'  - name: "' + _re.escape(_dead) + r'"\n(?:    .*\n)*',
+                        "", text)
+                    # 同时清掉组内对这些已删除代理的引用，避免悬空引用
+                    text = text.replace(f'      - "{_dead}"\n', "")
 
         # ?provider=1：只留 proxies 段，给 mihomo 当 proxy-provider 用。
         # 完整配置（含 port/mode/rules）塞进 provider 会把客户端的端口和规则顶掉，
