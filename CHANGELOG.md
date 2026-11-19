@@ -49,8 +49,8 @@
 
 ### 测试
 
-`test_pool`(37) / `test_cookieutil`(8) / `test_webapi`(55) / `test_cli`(14) /
-`test_geo`(7) / `test_crx`(14) / `test_zip`(13) / `test_chrome_formats.js`(9)
+`test_pool`(37) / `test_cookieutil`(8) / `test_webapi`(55) / `test_cli`(16) /
+`test_geo`(7) / `test_crx`(14) / `test_zip`(20) / `test_chrome_formats.js`(9)
 
 ## [0.2.0]
 
