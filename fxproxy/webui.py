@@ -140,6 +140,7 @@ PAGE = """<!doctype html>
     <h2>节点列表 <span id="nodeCount" class="muted"></span></h2>
     <div class="row">
       <button id="probeBtn" class="sm">测试全部节点延迟</button>
+      <button id="egressBtn" class="sm">探测出口 IP</button>
       <span id="probeMsg" class="muted"></span>
     </div>
     <div class="nodescroll">
@@ -251,12 +252,15 @@ function latText(n){
   if(n.ok === false || n.latency_ms == null) return "超时";
   return n.latency_ms + " ms";
 }
-async function loadNodes(probe){
-  const btn = $("probeBtn"), body = $("nodeBody");
+async function loadNodes(probe, egress){
+  const btn = $("probeBtn"), ebtn = $("egressBtn"), body = $("nodeBody");
   if(probe){ btn.disabled = true; btn.textContent = "探测中…";
     $("probeMsg").textContent = "并发 TCP 探测中（16 线程，4s 超时）…"; }
+  if(egress){ ebtn.disabled = true; ebtn.textContent = "探测中…";
+    $("probeMsg").textContent = "逐节点实测出口 IP（16 并发，约 30-60 秒）…"; }
+  const qs = (probe?"?probe=1":"") + (egress?(probe?"&":"?")+"egress=1":"");
   try{
-    const r = await fetch("/api/nodes"+(probe?"?probe=1":""));
+    const r = await fetch("/api/nodes"+qs);
     const d = await r.json();
     if(d.error){ body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
     const rows = (d.nodes||[]).map(n => {
@@ -269,7 +273,8 @@ async function loadNodes(probe){
                      : `<td><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
       }
       const cur = (n.host === CURRENT_NODE);
-      return `<tr${cur?' style="background:#123329;"':''}><td>${n.name}${cur?' <span class="pill on">当前</span>':''}</td><td>${n.host}</td><td>${n.port}</td>${lat}${bw}`+
+      const ipLine = n.egress_ip ? `<div class="muted" style="font-size:11px;">出口 ${n.egress_ip}</div>` : '';
+      return `<tr${cur?' style="background:#123329;"':''}><td>${n.name}${cur?' <span class="pill on">当前</span>':''}</td><td>${n.host}${ipLine}</td><td>${n.port}</td>${lat}${bw}`+
         `<td><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
         `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button></td></tr>`;
     });
@@ -279,13 +284,19 @@ async function loadNodes(probe){
       const ok = (d.nodes||[]).filter(n=>n.ok).length;
       $("probeMsg").textContent = "可达 "+ok+"/"+(d.nodes||[]).length;
     }
+    if(egress){
+      const got = (d.nodes||[]).filter(n=>n.egress_ip).length;
+      $("probeMsg").textContent = "出口 IP 已探测 "+got+"/"+(d.nodes||[]).length;
+    }
   }catch(e){
     body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+e+'</td></tr>';
   }finally{
     if(probe){ btn.disabled = false; btn.textContent = "测试全部节点延迟"; }
+    if(egress){ ebtn.disabled = false; ebtn.textContent = "探测出口 IP"; }
   }
 }
 $("probeBtn").onclick = () => loadNodes(true);
+$("egressBtn").onclick = () => loadNodes(false, true);
 let CURRENT_NODE = "";
 async function useNode(host){
   $("probeMsg").textContent = "切换出口到 "+host+" …";
@@ -655,6 +666,18 @@ class Panel:
             with ThreadPoolExecutor(max_workers=16) as ex:
                 nodes = list(ex.map(_probe, nodes))
 
+        # 出口 IP：?egress=1 时实测探测（较慢，30-60s），否则读缓存
+        if req.query.get("egress") in ("1", "true", "yes") and nodes:
+            sem = asyncio.Semaphore(16)
+            results = await asyncio.gather(
+                *(self._probe_egress(n["host"], n["port"], sem) for n in nodes)
+            )
+            for host, ip in results:
+                if ip:
+                    Panel._egress_cache[host] = ip
+        for n in nodes:
+            n["egress_ip"] = Panel._egress_cache.get(n["host"])
+
         return web.json_response({"nodes": nodes})
 
     async def api_start(self, req):
@@ -965,6 +988,28 @@ class Panel:
     # ---- built-in vless server: one WS path per Fastly node -----------
 
     _nodes_cache: dict = {"data": None, "ts": 0.0}
+    _egress_cache: dict = {}
+
+    async def _probe_egress(self, host, port, sem):
+        """Tunnel through one node in plaintext HTTP to ipify; return its
+        real egress IP (what target websites actually see)."""
+        async with sem:
+            try:
+                reader, writer, _ = await asyncio.wait_for(
+                    self._vless_open_tunnel(host, port, "api.ipify.org", 80),
+                    timeout=30,
+                )
+                writer.write(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\n"
+                             b"Connection: close\r\n\r\n")
+                await writer.drain()
+                data = await asyncio.wait_for(reader.read(4096), timeout=10)
+                writer.close()
+                body = (data.split(b"\r\n\r\n", 1)[1]
+                        if b"\r\n\r\n" in data else b"").decode(errors="replace").strip()
+                ip = body.splitlines()[-1].strip() if body else ""
+                return host, (ip if ip.count(".") == 3 else None)
+            except Exception:
+                return host, None
 
     async def _public_nodes(self):
         """[(code, zh_name, host, port)] with a 300s cache; public list."""
