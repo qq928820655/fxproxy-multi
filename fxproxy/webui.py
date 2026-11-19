@@ -27,6 +27,38 @@ def _fxa():
     from . import fxa_auth
     return fxa_auth
 
+
+def _port_free(host: str, port: int) -> bool:
+    """端口能不能被 bind。先 connect 探测监听者，再试 bind。
+
+    只 bind 不 connect 会在 Windows 上误判（SO_REUSEADDR 语义不同），
+    只 connect 又会漏掉「被非监听 socket 占住」的情况，两步都做。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.35)
+        if s.connect_ex((host, port)) == 0:
+            return False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _pick_free_ports(start: int = 18095, span: int = 200) -> tuple[int, int]:
+    """给临时测速实例挑一对相邻空闲端口。
+
+    原来写死 8095/8096，撞上用户自己的服务时测速直接失败，还不容易看出原因。
+    """
+    port = start
+    for _ in range(span):
+        if _port_free("127.0.0.1", port) and _port_free("127.0.0.1", port + 1):
+            return port, port + 1
+        port += 2
+    raise RuntimeError(f"从 {start} 起找不到一对空闲端口，测速跳过")
+
 PAGE = """<!doctype html>
 <html lang="zh">
 <head>
@@ -132,6 +164,19 @@ PAGE = """<!doctype html>
       <button id="stopBtn" class="stop" disabled>停止</button>
       <button id="testBtn">测试出口 IP</button>
     </div>
+    <div class="row" style="margin-top:12px;">
+      <label>端口</label>
+      HTTP <input id="httpPort" type="number" min="1" max="65535" inputmode="numeric"
+                  style="width:96px;min-width:0;padding:6px 8px;">
+      SOCKS5 <input id="socksPort" type="number" min="1" max="65535" inputmode="numeric"
+                    style="width:96px;min-width:0;padding:6px 8px;">
+      <button id="portBtn" class="sm">应用</button>
+      <span id="portMsg" class="muted" style="margin-top:0;"></span>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:2px;">
+      8080 / 1080 常见冲突（Tomcat、Jenkins、各类 dev server）。改完点「应用」，
+      运行中的代理会按新端口自动重启；订阅里的端口一并跟着变。
+    </div>
     <div id="nodeWarn" style="display:none;margin-top:8px;color:#f0b400;font-size:13px;"></div>
     <div id="egress" class="egress muted"></div>
   </div>
@@ -178,8 +223,10 @@ PAGE = """<!doctype html>
     <div style="margin-top:6px;">HTTP：<code id="httpAddr">127.0.0.1:8080</code>　
         SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></div>
     <div class="muted" style="font-size:12px;margin-top:4px;">
-      两个是同一后端的两个入口，任选其一：浏览器 / 系统代理 / 指纹浏览器填 <b>HTTP 8080</b>；
-      只认 SOCKS5 的客户端（Telegram、部分爬虫库、<code>curl --socks5</code>）填 <b>SOCKS5 1080</b>。
+      两个是同一后端的两个入口，任选其一：浏览器 / 系统代理 / 指纹浏览器填
+      <b>HTTP <span id="httpPortTxt">8080</span></b>；
+      只认 SOCKS5 的客户端（Telegram、部分爬虫库、<code>curl --socks5</code>）填
+      <b>SOCKS5 <span id="socksPortTxt">1080</span></b>。
     </div>
     <div class="row" style="margin-top:10px;">
       <label>Clash / Mihomo 订阅</label>
@@ -344,6 +391,12 @@ async function loadState(){
   const shownHost = (s.host==="0.0.0.0" || s.host==="::") ? location.hostname : s.host;
   $("httpAddr").textContent = shownHost+":"+s.http_port;
   $("socksAddr").textContent = shownHost+":"+s.socks_port;
+  $("httpPortTxt").textContent = s.http_port;
+  $("socksPortTxt").textContent = s.socks_port;
+  // 输入框正在编辑时不要被 5s 轮询刷回旧值
+  const ae = document.activeElement;
+  if (ae !== $("httpPort")) $("httpPort").value = s.http_port;
+  if (ae !== $("socksPort")) $("socksPort").value = s.socks_port;
   $("subUrl").textContent = location.origin + "/clash.yaml";
   $("provUrl").textContent = location.origin + "/clash.yaml?provider=1";
   CURRENT_NODE = s.node || "";
@@ -444,6 +497,26 @@ $("startBtn").onclick = async () => {
   userPicked = false; await loadState();
 };
 $("stopBtn").onclick = async () => { await fetch("/api/stop",{method:"POST"}); await loadState(); };
+$("portBtn").onclick = async () => {
+  const btn = $("portBtn"), msg = $("portMsg");
+  btn.disabled = true; msg.style.color = ""; msg.textContent = "应用中…";
+  try{
+    const r = await fetch("/api/ports",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({http_port:$("httpPort").value.trim(),
+                           socks_port:$("socksPort").value.trim()})});
+    const d = await r.json();
+    if (d.error){ msg.style.color = "#f85149"; msg.textContent = d.error; }
+    else if (d.unchanged){ msg.style.color = ""; msg.textContent = "端口没变"; }
+    else {
+      msg.style.color = "#3fb950";
+      msg.textContent = "已切到 HTTP "+d.http_port+" / SOCKS5 "+d.socks_port+
+        (d.restarted ? "，代理已重启" : (d.stopped ? "，代理保持停止" : "")) +
+        "；订阅地址已同步";
+      await loadState(); loadNodes(false);
+    }
+  }catch(e){ msg.style.color = "#f85149"; msg.textContent = "请求失败："+e; }
+  finally{ btn.disabled = false; }
+};
 $("copyCfgBtn").onclick = async () => {
   const r = await fetch("/api/config"); const d = await r.json();
   if(d.error){ $("copyMsg").textContent = "失败："+d.error; return; }
@@ -481,7 +554,7 @@ $("testBtn").onclick = async () => {
 
 
 class Panel:
-    def __init__(self, config_path=None):
+    def __init__(self, config_path=None, web_host="127.0.0.1", web_port=8765):
         self.config_path = config_path
         self.cfg = cfgmod.load(config_path)
         self.pool = self._make_pool()
@@ -490,6 +563,9 @@ class Panel:
         self._st_lock = asyncio.Lock()
         self._bench = None
         self._preconn = None
+        # 面板自身监听端口：改代理端口时要把面板端口排除掉，否则自己把自己顶掉
+        self.web_host = web_host
+        self.web_port = int(web_port or 8765)
 
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
@@ -540,6 +616,7 @@ class Panel:
             "host": self.cfg.get("host", "127.0.0.1"),
             "http_port": self.cfg.get("http_port", 8080),
             "socks_port": self.cfg.get("socks_port", 1080),
+            "web_port": self.web_port,
         })
 
     def _account_rows(self):
@@ -746,7 +823,7 @@ class Panel:
 
     async def api_speedtest(self, req):
         """Download benchmark pinned to one node via a temporary proxy
-        instance on ports 8095/8096; reports megabits per second."""
+        instance on a free port pair; reports megabits per second."""
         try:
             body = await req.json()
         except Exception:
@@ -760,9 +837,10 @@ class Panel:
             srv = None
             try:
                 picker = NodePicker(self.pool.clients[0], None, node)
+                st_port, _st_socks = _pick_free_ports()
                 srv = ProxyServer(
                     self.pool, picker,
-                    host="127.0.0.1", http_port=8095, socks_port=8096,
+                    host="127.0.0.1", http_port=st_port, socks_port=_st_socks,
                     failover=1,
                 )
                 await srv.start()
@@ -772,10 +850,10 @@ class Panel:
                     import requests as _rq
                     t0 = time.monotonic()
                     got = 0
+                    proxy = f"http://127.0.0.1:{st_port}"
                     with _rq.get(
                         "https://speed.cloudflare.com/__down?bytes=8000000",
-                        proxies={"http": "http://127.0.0.1:8095",
-                                 "https": "http://127.0.0.1:8095"},
+                        proxies={"http": proxy, "https": proxy},
                         stream=True, timeout=(5, 25),
                     ) as r:
                         r.raise_for_status()
@@ -801,6 +879,94 @@ class Panel:
             await self.srv.stop()
             self.srv = None
         return web.json_response({"ok": True})
+
+    async def api_ports(self, req):
+        """改监听端口：落盘 config，运行中则原地重启。
+
+        8080 在国内机器上基本是挤不进去的（Tomcat/Jenkins/一堆 dev server），
+        让用户去改 config.json 再重启进程太重；这里一次请求搞定。
+        """
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+
+        old_http = int(self.cfg.get("http_port", 8080) or 8080)
+        old_socks = int(self.cfg.get("socks_port", 1080) or 1080)
+
+        def _parse(field, default):
+            raw = body.get(field)
+            if raw in (None, ""):
+                return default
+            try:
+                port = int(raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"{field} 不是数字：{raw!r}")
+            if not (1 <= port <= 65535):
+                raise ValueError(f"{field} 超出范围 1-65535：{port}")
+            return port
+
+        try:
+            http_port = _parse("http_port", old_http)
+            socks_port = _parse("socks_port", old_socks)
+        except ValueError as e:
+            return web.json_response({"error": str(e)})
+
+        if http_port == socks_port:
+            return web.json_response({"error": "HTTP 与 SOCKS5 不能用同一个端口"})
+        if self.web_port in (http_port, socks_port):
+            return web.json_response(
+                {"error": f"端口 {self.web_port} 是面板自己在用，换一个"}
+            )
+
+        if (http_port, socks_port) == (old_http, old_socks):
+            return web.json_response({"ok": True, "unchanged": True,
+                                      "http_port": http_port, "socks_port": socks_port})
+
+        # 只检测真正变了的端口：没变的那个此刻可能正被自己监听。
+        host = self.cfg.get("host", "127.0.0.1")
+        probe_host = host if host not in ("0.0.0.0", "::", "*", "") else "127.0.0.1"
+        for port, was in ((http_port, old_http), (socks_port, old_socks)):
+            if port != was and not _port_free(probe_host, port):
+                return web.json_response(
+                    {"error": f"端口 {port} 已被其它程序占用，换一个"}
+                )
+
+        was_running = self.srv is not None
+        country = self.srv.picker.country if was_running else (self.cfg.get("country") or None)
+        node = (getattr(self.srv.picker, "node", None) or None) if was_running else None
+
+        if was_running:
+            try:
+                await self.srv.stop()
+            except Exception:
+                pass
+            self.srv = None
+
+        self.cfg["http_port"] = http_port
+        self.cfg["socks_port"] = socks_port
+        self._persist()
+
+        base = {"ok": True, "http_port": http_port, "socks_port": socks_port}
+        if not was_running:
+            return web.json_response(base)
+        if self.pool is None or not self.pool.tokens:
+            return web.json_response({**base, "stopped": True,
+                                      "note": "端口已保存；没有账号，代理保持停止"})
+        try:
+            picker = NodePicker(self.pool.clients[0], country, node)
+            srv = ProxyServer(
+                self.pool, picker,
+                host=host, http_port=http_port, socks_port=socks_port,
+                failover=self.cfg.get("failover", 3),
+            )
+            await srv.start()
+            self.srv = srv
+        except Exception as e:
+            # 已停的旧实例回不来，但端口值已经写盘，用户改完再点启动即可
+            return web.json_response({**base, "restarted": False,
+                                      "error": f"端口已保存，但按新端口重启失败：{e}"})
+        return web.json_response({**base, "restarted": True})
 
     async def api_login(self, req):
         try:
@@ -1473,7 +1639,7 @@ class Panel:
 
 
 def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=True):
-    panel = Panel(config_path)
+    panel = Panel(config_path, web_host=web_host, web_port=web_port)
     app = web.Application()
 
     async def _enlarge_executor(_app):
@@ -1499,6 +1665,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.get("/sub", panel.api_sub),
         web.post("/api/start", panel.api_start),
         web.post("/api/stop", panel.api_stop),
+        web.post("/api/ports", panel.api_ports),
         web.post("/api/login", panel.api_login),
         web.get("/api/egress", panel.api_egress),
         web.get("/api/config", panel.api_config),

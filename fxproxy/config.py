@@ -108,8 +108,9 @@ def load(path: Path | None = None) -> dict:
                 cfg[key] = int(raw.strip())
             except (TypeError, ValueError):
                 pass  # 非法值忽略，走配置文件/回退
-        if not cfg.get(key):
-            cfg[key] = cfg.get(fallback, 8080 if key == "sub_http_port" else 1080)
+        # 0 或缺失 = 跟随监听端口（消费端用 `or` 回退）。
+        # 这里刻意不回填具体端口：回填会把「跟随」固化成当时的值，
+        # 之后在面板里改监听端口，订阅就再也不跟着变了。
 
     if cfg.get("pool_strategy") not in _VALID_STRATEGIES:
         cfg["pool_strategy"] = "round-robin"

@@ -288,13 +288,24 @@ if (-not $Country) {
 # 端口：参数 > 旧值 > 默认(交互确认)
 function Ask-Port([string]$Label, [int]$Given, [int]$Old, [int]$Default) {
     if ($Given -gt 0) { return $Given }
-    if ($Old -gt 0)   { return $Old }
-    if (-not $script:firstRun) { return $Default }
+    if ($Old -gt 0) {
+        # 重跑安装时旧端口可能已被别的程序抢走（8080 是重灾区），不能硬上
+        if (-not (Test-PortBusy $Old)) { return $Old }
+        Warn "原端口 $Old 已被其它程序占用，改用空闲端口"
+    }
+    if (-not $script:firstRun) {
+        # 非交互重跑：顺延到最近的空闲端口，不阻塞在 Read-Host 上
+        $p = $Default
+        while ((Test-PortBusy $p) -and $p -lt 65535) { $p++ }
+        Say "  $Label 自动顺延为 $p"
+        return $p
+    }
     while ($true) {
         $ans = Read-Host "  $Label (默认 $Default)"
         if (-not $ans) { $p = $Default } else {
             $p = 0
             if (-not [int]::TryParse($ans, [ref]$p)) { Warn "不是数字，重来"; continue }
+            if ($p -lt 1 -or $p -gt 65535) { Warn "端口范围 1-65535，重来"; continue }
         }
         if (Test-PortBusy $p) { Warn "端口 $p 已被占用，换一个" ; continue }
         return $p

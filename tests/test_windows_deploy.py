@@ -97,8 +97,14 @@ def main():
 
     print("\n[win] 端口/进程清理有防护")
     check("Test-PortOpen" in ctl, "ctl.ps1 起之前检查端口占用")
+    check("socks_port" in ctl, "ctl.ps1 也检查 SOCKS5 端口占用")
     check("HasExited" in ctl, "ctl.ps1 检查进程是否秒退")
     check("Get-RunningPid" in ctl, "ctl.ps1 用 pid 文件防重复启动")
+
+    print("\n[win] 端口冲突不硬上")
+    check("Test-PortBusy $Old" in ins, "install.ps1 旧端口被占时重新选")
+    check("自动顺延" in ins, "install.ps1 非交互重跑时顺延到空闲端口")
+    check("1-65535" in ins, "install.ps1 校验端口范围")
 
     print("\n[win] 卸载路径存在")
     check("Uninstall" in ins, "install.ps1 支持 -Uninstall")

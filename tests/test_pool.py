@@ -180,16 +180,21 @@ def test_env_deployment_overrides():
         check(cfg["sub_http_port"] == 18080 and cfg["sub_socks_port"] == 11080,
               "env 订阅公网端口")
 
-        # 端口未显式给时回退到实际监听端口
+        # 端口未显式给时「跟随」监听端口。这里刻意保留 0 而不回填具体值，
+        # 否则之后改监听端口订阅会停在旧端口上（消费端用 `or` 回退）。
         os.environ.pop("FXPROXY_SUB_HTTP_PORT", None)
         os.environ.pop("FXPROXY_SUB_SOCKS_PORT", None)
         cfg2 = cfgmod.load("/nonexistent/path/config.json")
-        check(cfg2["sub_http_port"] == cfg2["http_port"], "订阅端口回退到监听端口")
+        check(not cfg2["sub_http_port"], "未配置时 sub 端口保持 0=跟随")
+        check((cfg2["sub_http_port"] or cfg2["http_port"]) == cfg2["http_port"],
+              "订阅端口回退到监听端口")
 
         # 非法 env 端口忽略，不把程序带崩
         os.environ["FXPROXY_SUB_HTTP_PORT"] = "not-a-port"
         cfg3 = cfgmod.load("/nonexistent/path/config.json")
-        check(cfg3["sub_http_port"] == cfg3["http_port"], "非法 env 端口被忽略")
+        check(not cfg3["sub_http_port"], "非法 env 端口被忽略")
+        check((cfg3["sub_http_port"] or cfg3["http_port"]) == cfg3["http_port"],
+              "非法值仍回退到监听端口")
     finally:
         for k, v in saved.items():
             if v is None:
@@ -209,10 +214,43 @@ def test_subscription_uses_public_entry():
     check("127.0.0.1" not in yaml, "订阅里不出现 127.0.0.1")
 
 
+def test_port_helpers():
+    """端口占用检测与 bind 失败提示——8080 冲突是最高频的启动失败原因。"""
+    print("[ports] 端口占用检测 + 中文提示")
+    import errno
+    import socket
+    from fxproxy.proxyserver import _bind_error
+    from fxproxy.webui import _pick_free_ports, _port_free
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    busy = srv.getsockname()[1]
+    try:
+        check(not _port_free("127.0.0.1", busy), "已监听端口判定为占用")
+    finally:
+        srv.close()
+    check(_port_free("127.0.0.1", busy), "释放后端口可用")
+
+    e = OSError(errno.EADDRINUSE, "in use")
+    msg = _bind_error("HTTP", "--http-port", "127.0.0.1", 8080, e)
+    check("8080" in msg and "--http-port" in msg, "占用提示含端口与改法")
+    check("面板" in msg, "占用提示指向面板入口")
+    e2 = OSError(errno.EACCES, "denied")
+    check("1024" in _bind_error("HTTP", "--http-port", "127.0.0.1", 80, e2),
+          "低端口无权限时给出高位端口建议")
+
+    p1, p2 = _pick_free_ports(start=19100, span=60)
+    check(p2 == p1 + 1, "测速端口成对相邻")
+    check(_port_free("127.0.0.1", p1) and _port_free("127.0.0.1", p2),
+          "测速端口确实空闲（不再写死 8095/8096）")
+
+
 if __name__ == "__main__":
     test_config_migration()
     test_env_deployment_overrides()
     test_subscription_uses_public_entry()
+    test_port_helpers()
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()

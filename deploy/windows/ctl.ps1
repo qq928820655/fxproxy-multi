@@ -97,7 +97,8 @@ function Start-All {
         if ($pp -gt 0) {
             Ok "代理已在运行 (PID $pp)"
         } else {
-            if (Test-PortOpen $httpPort) { Bad "端口 $httpPort 被别的程序占着，改 config.json 里的 http_port"; return }
+            if (Test-PortOpen $httpPort) { Bad "端口 $httpPort 被别的程序占着：面板「运行状态 → 端口」改掉，或改 config.json 的 http_port"; return }
+            if (Test-PortOpen $socksPort) { Bad "端口 $socksPort 被别的程序占着：面板「运行状态 → 端口」改掉，或改 config.json 的 socks_port"; return }
             $log = Get-LogName "proxy"
             $err = Join-Path $RunDir "proxy.err.log"
             # -c 是顶层全局参数，必须放在子命令（run）前面
@@ -119,6 +120,7 @@ function Start-All {
     if ($wp -gt 0) {
         Ok "面板已在运行 (PID $wp)"
     } else {
+        if (Test-PortOpen $webPort) { Bad "面板端口 $webPort 被别的程序占着：重跑 install.bat 换 -WebPort，或关掉占用者"; return }
         $log = Get-LogName "web"
         $err = Join-Path $RunDir "web.err.log"
         $p = Start-Process -FilePath $Fx `

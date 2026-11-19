@@ -265,12 +265,20 @@ def cmd_run(args):
     )
     country = (args.country or cfg.get("country") or "").upper() or None
     picker = NodePicker(pool.clients[0], country)
+    http_port = args.http_port or cfg["http_port"]
+    socks_port = args.socks_port or cfg["socks_port"]
+    if (http_port, socks_port) != (cfg["http_port"], cfg["socks_port"]):
+        # 参数只覆盖本次运行；面板和 /clash.yaml 读的是 config.json，
+        # 长期改端口要在面板里改或写配置，否则订阅会指向旧端口。
+        print(f"[fxproxy] 本次端口覆盖 HTTP {http_port} / SOCKS5 {socks_port}；"
+              f"config.json 仍是 {cfg['http_port']}/{cfg['socks_port']}，"
+              f"面板与订阅按配置走，要长期生效请改配置。", file=sys.stderr)
     srv = ProxyServer(
         pool,
         picker,
         host=args.host or cfg["host"],
-        http_port=args.http_port or cfg["http_port"],
-        socks_port=args.socks_port or cfg["socks_port"],
+        http_port=http_port,
+        socks_port=socks_port,
         failover=getattr(args, "failover", None) or cfg.get("failover", 3),
     )
     try:

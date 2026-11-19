@@ -9,6 +9,7 @@ in both directions.
 from __future__ import annotations
 
 import asyncio
+import errno
 import random
 import ssl
 import struct
@@ -17,6 +18,25 @@ from typing import Optional
 from .guardian import GuardianClient, TokenPool
 
 FASTLY_CONNECT_TIMEOUT = 20
+
+# Windows 的 socket 错误码与 POSIX 不同，同一含义要两个都认。
+_EADDRINUSE = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", errno.EADDRINUSE)}
+
+
+def _bind_error(label: str, flag: str, host: str, port: int, exc: OSError) -> str:
+    """把 bind 失败翻译成一条能直接照做的中文提示。
+
+    默认端口 8080 是本地开发的重灾区（Jenkins、Tomcat、各种 dev server），
+    裸抛 OSError 只会看到 Errno 10048，用户不知道下一步做什么。
+    """
+    if exc.errno in _EADDRINUSE:
+        return (f"{label} 端口 {port} 已被其它程序占用（{host}:{port}）。"
+                f"换一个端口：加参数 {flag} <新端口>，"
+                f"或在面板「运行状态 → 端口」里直接改后应用。")
+    if exc.errno in (errno.EACCES, errno.EPERM):
+        return (f"{label} 端口 {port} 没有绑定权限（1024 以下端口需要 root/管理员）。"
+                f"改用 1024 以上的端口，例如 {flag} 18080。")
+    return f"{label} 端口 {port} 监听失败：{exc}"
 
 
 class AccountAuthFailure(ConnectionError):
@@ -371,12 +391,28 @@ class ProxyServer:
                     self.pool.report_failure(gc)
                     _log(f"账号启动预热失败: {e!r}")
         await asyncio.to_thread(_prime)
-        self._http_srv = await asyncio.start_server(
-            self._handle_http, self.host, self.http_port
-        )
-        self._socks_srv = await asyncio.start_server(
-            self._handle_socks, self.host, self.socks_port
-        )
+        try:
+            self._http_srv = await asyncio.start_server(
+                self._handle_http, self.host, self.http_port
+            )
+        except OSError as e:
+            raise RuntimeError(
+                _bind_error("HTTP", "--http-port", self.host, self.http_port, e)
+            ) from e
+        try:
+            self._socks_srv = await asyncio.start_server(
+                self._handle_socks, self.host, self.socks_port
+            )
+        except OSError as e:
+            # HTTP 已绑上，回滚掉，避免半个服务留在那里占端口
+            self._http_srv.close()
+            try:
+                await self._http_srv.wait_closed()
+            except Exception:
+                pass
+            raise RuntimeError(
+                _bind_error("SOCKS5", "--socks-port", self.host, self.socks_port, e)
+            ) from e
         _log(f"HTTP 代理  http://{self.host}:{self.http_port}")
         _log(f"SOCKS5 代理 socks5://{self.host}:{self.socks_port}")
         _log(f"出口国家: {self.picker.country or '任意'}")

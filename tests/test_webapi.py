@@ -92,6 +92,7 @@ async def main():
             web.get("/api/servers", panel.api_servers),
             web.get("/api/nodes", panel.api_nodes),
             web.post("/api/start", panel.api_start),
+            web.post("/api/ports", panel.api_ports),
             web.get("/clash.yaml", panel.api_clash),
         ])
         async with TestClient(TestServer(app)) as cli:
@@ -240,6 +241,79 @@ async def main():
             check("type: http" in yp and "type: socks5" in yp, "provider 仍含两个节点")
             check("fxproxy-provider.yaml" in rp.headers.get("Content-Disposition", ""),
                   "provider 下载文件名区分")
+
+            print("[api] 端口可配置（8080 被占时改端口）")
+            s0 = await (await cli.get("/api/state")).json()
+            check(s0.get("web_port") == 8765, "state 暴露面板端口，供排除冲突")
+
+            r = await cli.post("/api/ports", json={"http_port": 19081, "socks_port": 19082})
+            dp = await r.json()
+            check(dp.get("ok") and dp["http_port"] == 19081 and dp["socks_port"] == 19082,
+                  "改端口返回新端口")
+            saved = cfgmod.load(cfgpath)
+            check(saved["http_port"] == 19081, "新 HTTP 端口已落盘")
+            check(saved["socks_port"] == 19082, "新 SOCKS5 端口已落盘")
+
+            r = await cli.post("/api/ports", json={"http_port": 19081, "socks_port": 19081})
+            check("同一个端口" in (await r.json()).get("error", ""),
+                  "HTTP/SOCKS5 不许同端口")
+            r = await cli.post("/api/ports", json={"http_port": 70000})
+            check("1-65535" in (await r.json()).get("error", ""), "越界端口被拒")
+            r = await cli.post("/api/ports", json={"http_port": "abc"})
+            check("不是数字" in (await r.json()).get("error", ""), "非数字端口被拒")
+            r = await cli.post("/api/ports", json={"http_port": 8765})
+            check("面板" in (await r.json()).get("error", ""), "不许占用面板端口")
+            r = await cli.post("/api/ports", json={"http_port": 19081, "socks_port": 19082})
+            check((await r.json()).get("unchanged") is True, "端口未变时幂等返回")
+
+            yp2 = await (await cli.get("/clash.yaml")).text()
+            check("port: 19081" in yp2 and "port: 19082" in yp2,
+                  "订阅端口跟随新配置")
+
+            check("portBtn" in (await (await cli.get("/")).text()), "面板含端口设置 UI")
+
+            print("[api] 运行中改端口 → 按新端口自动重启")
+            # 桩掉 ProxyServer，只验证「先停、再按新端口起」的接线，不打真外网
+            class _Picker:
+                country = "US"
+                node = "node-a"
+
+            class _OldSrv:
+                picker = _Picker()
+                stopped = False
+
+                async def stop(self):
+                    self.stopped = True
+
+            old_srv = _OldSrv()
+            panel.srv = old_srv
+            orig_ps = webui_mod.ProxyServer
+            calls = {}
+
+            class _NewSrv:
+                def __init__(self, pool, picker, host=None, http_port=None,
+                             socks_port=None, failover=3):
+                    calls.update(host=host, http_port=http_port,
+                                 socks_port=socks_port, country=picker.country,
+                                 node=picker.node)
+
+                async def start(self):
+                    calls["started"] = True
+
+            webui_mod.ProxyServer = _NewSrv
+            try:
+                r = await cli.post("/api/ports", json={"http_port": 19083,
+                                                       "socks_port": 19084})
+                dr = await r.json()
+            finally:
+                webui_mod.ProxyServer = orig_ps
+                panel.srv = None
+            check(dr.get("restarted") is True, "运行中改端口返回 restarted")
+            check(old_srv.stopped, "旧实例先被停掉")
+            check(calls.get("http_port") == 19083 and calls.get("socks_port") == 19084,
+                  "新实例用新端口启动")
+            check(calls.get("country") == "US" and calls.get("node") == "node-a",
+                  "重启保留原出口国家/节点")
 
         # 容器部署：env 注入公网入口后，订阅必须指向公网地址与映射端口。
         print("[api] clash.yaml 走 env 公网入口")

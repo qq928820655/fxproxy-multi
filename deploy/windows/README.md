@@ -56,6 +56,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\ctl.ps1 resta
 | SOCKS5 | `127.0.0.1:1080` |
 | Clash/Mihomo 订阅 | `http://127.0.0.1:8765/clash.yaml` |
 
+端口都能换：装的时候用 `-HttpPort / -SocksPort / -WebPort`，装完也可以直接在面板
+「② 运行状态 → 端口」里改（运行中会按新端口自动重启，订阅同步跟着变）。
+
 订阅给本机客户端用；局域网里别的机器要连，得把 `config.json` 的 `host` 改成 `0.0.0.0`，
 并把 `sub_server` 填成本机局域网 IP（否则订阅里是 `127.0.0.1`，客户端连自己）。
 
@@ -77,7 +80,7 @@ type .run\proxy-YYYYMMDD.log
 
 | 现象 | 原因 |
 |---|---|
-| 端口被占 | 换 `-HttpPort` / `-WebPort`，或 `netstat -ano \| findstr :8080` 找占用者 |
+| 端口被占 | 面板「运行状态 → 端口」直接改；或重跑 `install.bat -HttpPort 18080 -SocksPort 11080`；查占用 `netstat -ano \| findstr :8080` |
 | pip 卡着不动 / `Connection interrupted` | 系统代理指向已关闭的端口。用 `-Proxy http://127.0.0.1:<你的端口>` 或 `-NoProxy -IndexUrl <镜像>` |
 | `python` 找不到 | 装 Python 时没勾 "Add python.exe to PATH"，重装或勾上再跑 |
 | 登录依赖装不上 | Python 3.14 没有 `curl_cffi` wheel；只用 refresh_token 的话不影响，脚本会继续 |

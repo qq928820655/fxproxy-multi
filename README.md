@@ -248,6 +248,32 @@ fxproxy web                                # 打开控制面板
 
 面板运行后，把浏览器/系统代理指到 `127.0.0.1:8080`(HTTP) 或 `127.0.0.1:1080`(SOCKS5) 即可。
 
+### 端口怎么改（8080 被占时）
+
+三个端口全都能改，四种方式任选：
+
+1. **面板里改（推荐，运行中也能改）**：面板「② 运行状态 → 端口」填新端口点「应用」。
+   运行中的代理会按新端口自动重启，`/clash.yaml` 订阅里的端口同步跟着变。
+2. **命令行参数**：`fxproxy run --http-port 18080 --socks-port 11080`；面板端口 `fxproxy web --web-port 18765`。
+3. **配置文件**：`config.json` 里的 `http_port` / `socks_port`。
+4. **环境变量**（容器 / 无头）：`FXPROXY_HTTP_PORT` / `FXPROXY_SOCKS_PORT` / `FXPROXY_WEB_PORT`，
+   对外映射用 `FXPROXY_SUB_HTTP_PORT` / `FXPROXY_SUB_SOCKS_PORT`。
+
+端口被占不会静默失败：启动直接报「端口 8080 已被其它程序占用」并给出改法；
+Windows 的 `install.bat` 重跑时若发现旧端口被抢，会自动顺延到下一个空闲端口。
+
+> 容器改了监听端口，`docker-compose.yml` 的 `ports:` 映射要同步改；只改对外端口就动 `FXPROXY_SUB_*`。
+
+查是谁占着 8080：
+
+```powershell
+netstat -ano | findstr :8080          # Windows
+```
+```bash
+lsof -iTCP:8080 -sTCP:LISTEN          # macOS / Linux
+```
+
+
 ### 订阅地址（Clash / Mihomo）
 
 不出机场式远程节点订阅——fxproxy 本身是本地落地代理，账号轮换和节点切换都在它内部做。
@@ -261,7 +287,8 @@ fxproxy web                                # 打开控制面板
   fxproxy export-clash --server 192.168.1.50 -o fxproxy.yaml   # 异机导入指定 IP
   ```
 
-订阅内容只有两个节点：`fxproxy-http`（HTTP，8080）和 `fxproxy-socks5`（SOCKS5，1080），
+订阅内容只有两个节点：`fxproxy-http`（HTTP，`http_port`，默认 8080）和
+`fxproxy-socks5`（SOCKS5，`socks_port`，默认 1080），
 策略组 `PROXY` 可选节点或 DIRECT，最后一条 `MATCH,PROXY` 全走代理。
 
 #### 接 mihomo 的两种姿势
