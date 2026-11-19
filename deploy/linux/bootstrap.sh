@@ -425,6 +425,7 @@ fxproxy 菜单式一键部署
   --no-service           不注册 systemd
   --no-start             装完不启动
   --uninstall [--purge]  卸载（--purge 连凭证一起删）
+  --update               只更新已装实例（等价 fxproxy-ctl update）
   --dry-run              只打印步骤
 
 环境变量:
@@ -456,13 +457,14 @@ main() {
   local known=" --yes -y --token --tokens --cookie-file --country --dir
     --http-port --socks-port --web-port --host --web-host --sub-server
     --index-url --proxy --with-login-deps --no-service --no-start --user
-    --system --dry-run --uninstall --purge --menu -h --help "
+    --system --dry-run --uninstall --purge --update --menu -h --help "
 
   local passthru=()
-  local want_menu=1 uninstall=0 purge=0
+  local want_menu=1 uninstall=0 purge=0 do_update=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --menu)      want_menu=1; shift ;;
+      --update)    do_update=1; shift ;;
       --uninstall) uninstall=1; passthru+=("$1"); shift ;;
       --purge)     purge=1; passthru+=("$1"); shift ;;
       -h|--help)   usage; exit 0 ;;
@@ -479,6 +481,12 @@ main() {
   if [[ $uninstall -eq 1 ]]; then
     run_uninstall "$purge"
     exit 0
+  fi
+
+  # 只更新：不进菜单、不重新选端口，直接走 fxproxy-ctl update
+  if [[ $do_update -eq 1 ]]; then
+    run_upgrade
+    exit $?
   fi
 
   if [[ $want_menu -eq 1 ]]; then

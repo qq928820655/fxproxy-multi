@@ -212,6 +212,43 @@ def main():
     check(r.returncode == 0, "uninstall 在 nohup 模式下不炸")
     check(not fake_ctl.exists(), "uninstall 删掉自己安装的 ctl")
 
+    print("\n[update] 一行更新脚本")
+    upd = LINUX / "update.sh"
+    check(upd.is_file(), "update.sh 存在")
+    if upd.is_file():
+        body = upd.read_text(encoding="utf-8")
+        check(b"\r\n" not in upd.read_bytes(), "是 LF（Linux 上才能直接跑）")
+        if os.name != "nt":
+            check(os.access(upd, os.X_OK), "有可执行位")
+        check("BASH_SOURCE" in body, "按 BASH_SOURCE 判断管道执行，不是看 -t 0")
+        check('"$CTL" update' in body, "委托给 fxproxy-ctl update")
+        check("FXPROXY_CTL_ENV" in body, "用户级安装时把 ctl.env 显式传下去")
+        check("/etc/fxproxy/ctl.env" in body, "找得到 root 安装的 ctl.env")
+        check("bootstrap.sh" in body, "没装过时给出安装命令")
+        if BASH:
+            r = subprocess.run([BASH, "-n", str(upd)], capture_output=True, text=True)
+            check(r.returncode == 0, f"bash -n 通过（{r.stderr.strip()[:60]}）")
+            r = subprocess.run([BASH, str(upd), "--help"], capture_output=True, text=True,
+                               timeout=60)
+            check(r.returncode == 0, "--help 退出 0")
+            check("--check" in r.stdout, "--help 列出 --check")
+            # 管道模式：cat 进来也要能自愈跑起来
+            with open(upd, "rb") as f:
+                r = subprocess.run([BASH, "-s", "--", "--help"], input=f.read(),
+                                   capture_output=True, timeout=60)
+            check(r.returncode == 0, "管道模式 --help 正常")
+
+    print("\n[update] ctl 对发行包部署是真更新")
+    ctl_body = (LINUX / "fxproxy-ctl.sh").read_text(encoding="utf-8")
+    check("releases/latest" in ctl_body, "取 Release API")
+    check("strip-components=1" in ctl_body, "按顶层目录剥离，盖到安装目录")
+    check("--exclude=.venv" in ctl_body, "备份排除 .venv")
+    check("backup-" in ctl_body, "覆盖前留备份")
+    check("--check" in ctl_body, "支持 --check 只看不升")
+    check("deploy/linux/install.sh" in ctl_body, "校验制品结构（缺 install.sh 就拒）")
+    check("重跑 install.sh 覆盖安装即可" not in ctl_body,
+          "不再只是提示「重跑 install.sh」——发行包部署有真更新路径")
+
     print(f"\nPASS={PASS}  FAIL={FAIL}")
     return 1 if FAIL else 0
 

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.build_release import (REQUIRED, build, build_tar, verify, verify_tar,  # noqa: E402
                                  version)
+from tools.build_release import main as build_main  # noqa: E402
 
 PASS = 0
 
@@ -106,6 +107,17 @@ def main():
                 dst.addfile(m, src.extractfile(m) if m.isfile() else None)
         ok_bt, probs_bt = verify_tar(broken_tar, top)
         check(not ok_bt and any("install.sh" in p for p in probs_bt), "tar 缺 install.sh 被拒")
+
+    # 版本只体现在包名上：包内顶层目录固定 fxproxy，升级时解压覆盖同名目录即可
+    print("\n[pkg] 包内顶层目录固定")
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "fixed.zip"
+        rc = build_main(["--target", "win", "-o", str(out)])
+        ok_fixed, _ = verify(out, "fxproxy")
+        check(rc == 0 and ok_fixed, "顶层目录是 fxproxy（不带版本号）")
+        with zipfile.ZipFile(out) as zf:
+            tops = {n.split("/", 1)[0] for n in zf.namelist()}
+        check(tops == {"fxproxy"}, f"顶层唯一且无版本号（实得 {sorted(tops)}）")
 
     print(f"\nALL PASS ({PASS} checks)")
 

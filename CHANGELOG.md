@@ -3,6 +3,29 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 上游基线：`c4ba254`（ios151/firefox）。
 
+## [0.4.2] — 2026-11-19
+
+### 新增
+
+- **面板改成三 tab**（原来是长长一片，滚半天找不到东西）：
+  - **运行管理**：运行状态（启停 / 出口国家 / 出口 IP）+ 节点列表
+  - **账户设置**：添加账号 + 账号池（策略、配额、删除）
+  - **系统设置**：端口 + 「在浏览器/系统里把代理设为」+ 订阅/导出 + 版本与更新
+  - 切换只改 `hidden`，不重建 DOM，轮询和输入框内容都不受影响；当前 tab 记在 URL 的
+    `#run / #acct / #sys` 上，刷新不会跳回第一页
+- **`curl` 一行更新**（`deploy/linux/update.sh`）：
+  `curl -fsSL …/deploy/linux/update.sh | bash`，支持 `--check`、`--proxy`、`--repo`。
+  它只是取壳，找到 `ctl.env` + `fxproxy-ctl` 后把活交出去；`bootstrap.sh --update` 也直达升级。
+- **包内顶层目录固定 `fxproxy`**：版本只体现在压缩包名（`fxproxy-0.4.2-linux.tar.gz`）上，
+  升级就是解压覆盖同名目录，不再堆出 `fxproxy-0.4.1` / `fxproxy-0.4.2` 一串并列目录。
+
+### 修复
+
+- **发行包部署的 `fxproxy-ctl update` 是空转**：以前只打印「重跑 install.sh 覆盖安装即可」。
+  现在真的更新：查 Release → 下载 tar.gz → 校验结构（缺 `install.sh` 就拒）→ 备份代码到
+  `.run/backup-<版本>-<时间>.tar.gz` → `--strip-components=1` 覆盖 → `pip install -e` → 重启。
+  `config.json` / `.venv` / `.run` 不动；`--check` 只看不升；同版本不重复下载。
+
 ## [0.4.1] — 2026-11-19
 
 ### 修复

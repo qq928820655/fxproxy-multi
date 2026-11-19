@@ -203,18 +203,112 @@ cmd_logs() {
   fi
 }
 
-cmd_update() {
-  local src="${FXPROXY_SRC:-$FXPROXY_DIR}"
-  if [[ -d "$src/.git" ]]; then
-    log "从 git 更新 $src ..."
-    git -C "$src" pull --ff-only
+# ---------------------------------------------------------------- 自更新
+# 发行包部署（非 git）以前只会提示「重跑 install.sh」，等于没有更新路径。
+# 这里补上：取最新 Release 的 tar.gz -> 备份代码 -> 覆盖 -> 重装依赖 -> 重启。
+# config.json / .venv / .run 一律不动（tar 只覆盖包里存在的文件）。
+CTL_REPO="${FXPROXY_REPO:-qq928820655/fxproxy-multi}"
+CTL_PROXY="${FXPROXY_GH_PROXY:-${FXPROXY_UPDATE_PROXY:-}}"
+CTL_API="${FXPROXY_UPDATE_API:-https://api.github.com/repos/$CTL_REPO/releases/latest}"
+
+fetch() {
+  # $1=url $2=输出文件；给了镜像前缀就拼上（ghproxy.net/https://github.com/...）
+  local u="$1"
+  [[ -n "$CTL_PROXY" ]] && u="${CTL_PROXY%/}/$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 2 --connect-timeout 15 --max-time 600 -o "$2" "$u"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -T 30 -O "$2" "$u"
   else
-    warn "源码目录不是 git 仓库（发行包部署），重跑 install.sh 覆盖安装即可"
+    warn "没有 curl 也没有 wget"
+    return 127
   fi
+}
+
+release_asset() {
+  # 输出 "tag<TAB>tar url"；没有 jq，按逗号切开抠字段
+  local jf="$1"
+  fetch "$CTL_API" "$jf" || return 1
+  [[ -s "$jf" ]] || return 1
+  local tag url
+  tag="$(tr ',' '\n' <"$jf" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+         | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
+  url="$(tr ',' '\n' <"$jf" | grep -o 'https://[^"]*-linux\.tar\.gz' | head -1)"
+  [[ -n "$url" ]] || return 1
+  printf '%s\t%s\n' "${tag:-v0}" "$url"
+}
+
+cmd_update() {
+  local check=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --check)   check=1; shift ;;
+      --proxy)   CTL_PROXY="${2:-}"; shift 2 ;;
+      --repo)    CTL_REPO="${2:-}"; CTL_API="https://api.github.com/repos/$CTL_REPO/releases/latest"; shift 2 ;;
+      -y|--yes)  shift ;;
+      *) die "update: 未知参数 $1" ;;
+    esac
+  done
+
+  local src="${FXPROXY_SRC:-$FXPROXY_DIR}"
+  local cur=""
+  cur="$("$FXPROXY_BIN" --version 2>/dev/null | tr -dc '0-9.' || true)"
+
+  if [[ -d "$src/.git" ]]; then
+    log "git 部署，pull 更新 $src ..."
+    if [[ "$check" == "1" ]]; then
+      git -C "$src" fetch --quiet origin 2>/dev/null || die "git fetch 失败"
+      local behind; behind="$(git -C "$src" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)"
+      if [[ "$behind" == "0" ]]; then log "已是最新（${cur:-未知}）"; else log "落后 $behind 个提交，可更新"; fi
+      return 0
+    fi
+    git -C "$src" pull --ff-only || die "git pull 失败"
+  else
+    local tmp info tag url pkg
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/fxproxy-up.XXXXXX")"
+    log "检查最新发行版 ..."
+    if ! info="$(release_asset "$tmp/rel.json")"; then
+      rm -rf "$tmp"
+      die "取不到 GitHub Release（网络不通或被限流）。可 export FXPROXY_GH_PROXY=https://ghproxy.net/ 再试"
+    fi
+    tag="${info%%$'\t'*}"
+    url="${info##*$'\t'}"
+    log "最新 ${tag}，当前 ${cur:-未知}"
+    if [[ "$check" == "1" ]]; then
+      if [[ -n "$cur" && "${tag#v}" == "$cur" ]]; then log "已是最新"; else log "可更新到 ${tag#v}"; fi
+      rm -rf "$tmp"
+      return 0
+    fi
+    if [[ -n "$cur" && "${tag#v}" == "$cur" ]]; then
+      log "已是最新，不重复下载"; rm -rf "$tmp"; return 0
+    fi
+
+    pkg="$tmp/pkg.tar.gz"
+    log "下载 $(basename "$url") ..."
+    if ! fetch "$url" "$pkg" || [[ ! -s "$pkg" ]]; then rm -rf "$tmp"; die "下载失败"; fi
+    if ! tar tzf "$pkg" >/dev/null 2>&1; then rm -rf "$tmp"; die "包不是合法 tar.gz（可能下到了错误页）"; fi
+    if ! tar tzf "$pkg" | grep -q '/deploy/linux/install.sh$'; then
+      rm -rf "$tmp"; die "制品结构不对：缺 deploy/linux/install.sh"
+    fi
+
+    mkdir -p "$RUN_DIR"
+    local bak="$RUN_DIR/backup-${cur:-old}-$(date +%Y%m%d%H%M%S).tar.gz"
+    tar czf "$bak" -C "$FXPROXY_DIR" --exclude=.venv --exclude=.run --exclude=config.json . \
+      2>/dev/null || warn "备份失败（继续更新）"
+    [[ -f "$bak" ]] && log "备份 $bak"
+
+    # --strip-components=1：包内顶层目录现在固定叫 fxproxy，直接盖到安装目录
+    tar xzf "$pkg" -C "$FXPROXY_DIR" --strip-components=1 || { rm -rf "$tmp"; die "覆盖失败"; }
+    log "代码已覆盖到 $tag"
+    rm -rf "$tmp"
+  fi
+
   log "重装依赖 ..."
   "$FXPROXY_BIN_DIR/pip" install -q -e "$src" 2>/dev/null \
-    || "$FXPROXY_BIN_DIR/pip" install -q -e "$src" -i https://pypi.tuna.tsinghua.edu.cn/simple
+    || "$FXPROXY_BIN_DIR/pip" install -q -e "$src" -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    || die "依赖安装失败，看上面的 pip 输出"
   cmd_restart
+  log "完成：$("$FXPROXY_BIN" --version 2>/dev/null || echo 未知)"
 }
 
 cmd_uninstall() {

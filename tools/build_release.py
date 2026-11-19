@@ -212,16 +212,20 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     ver = version()
-    top = f"fxproxy-{ver}"
+    # 包内顶层目录固定叫 fxproxy，版本只体现在压缩包名上。
+    # 这样升级就是「解压覆盖同名目录」，不会堆出 fxproxy-0.4.1 / fxproxy-0.4.2
+    # 一堆并列目录，tar --strip-components=1 盖到安装目录时也不会串版本。
+    top = "fxproxy"
+    asset = f"fxproxy-{ver}"
     targets: list[str] = ["win", "linux"] if args.target == "all" else [args.target]
 
     rc = 0
     for target in targets:
+        suffix = "-win.zip" if target == "win" else "-linux.tar.gz"
         if args.out:
-            out = Path(args.out) if len(targets) == 1 else DIST / (
-                f"{top}-win.zip" if target == "win" else f"{top}-linux.tar.gz")
+            out = Path(args.out) if len(targets) == 1 else DIST / (asset + suffix)
         else:
-            out = DIST / (f"{top}-win.zip" if target == "win" else f"{top}-linux.tar.gz")
+            out = DIST / (asset + suffix)
 
         verify_fn = verify if target == "win" else verify_tar
         if args.check:

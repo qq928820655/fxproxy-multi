@@ -291,9 +291,11 @@ bash bootstrap.sh --help                      # 全部参数
 已经下好包的话：
 
 ```bash
-tar xzf fxproxy-0.4.1-linux.tar.gz && cd fxproxy-0.4.1
+tar xzf fxproxy-0.4.2-linux.tar.gz && cd fxproxy
 sudo ./deploy/linux/install.sh --token 你的refresh_token --country US
 ```
+
+包内顶层目录固定叫 `fxproxy`（版本只在压缩包名上），所以升级就是解压覆盖同名目录。
 
 一条命令做完：装系统包与 Python 依赖 → 建 venv → 写 `config.json`（600）→ 装两个 systemd
 单元（`fxproxy` + `fxproxy-web`，开机自启）→ 启动并打印面板地址。端口被占自动顺延；
@@ -320,13 +322,31 @@ fxproxy-ctl start | stop | restart | logs | update | url
 Alpine（apk）、openSUSE（zypper），x86_64 与 aarch64 都行；Python 需 ≥ 3.10。
 细节与故障排查见 [deploy/linux/README.md](deploy/linux/README.md)。
 
-### 升级（三种方式，任选）
+### 升级（四种方式，任选）
 
 | 场景 | 做法 |
 |---|---|
-| 有面板 | `② 运行状态 → 版本 → 检查更新 → 一键更新` |
+| **一行命令**（curl，和部署同款） | `curl -fsSL <raw>/deploy/linux/update.sh \| bash` |
+| 有面板 | `② 运行状态` → 系统设置 → 「检查更新 / 一键更新」 |
 | 无头 / SSH | `fxproxy update`（`--check` 只看，`-y` 免确认） |
-| 脚本化 | `fxproxy-ctl update`（git 部署走 pull，发行包部署重跑 install.sh） |
+| 脚本化 | `fxproxy-ctl update`（git 部署走 pull，发行包部署下载制品覆盖） |
+
+一行更新（Linux / macOS，只想看有没有新版加 `--check`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/qq928820655/fxproxy-multi/main/deploy/linux/update.sh | bash
+curl -fsSL .../deploy/linux/update.sh | bash -s -- --check
+curl -fsSL .../deploy/linux/update.sh | bash -s -- --proxy https://ghproxy.net/
+```
+
+它只是取壳：找到 `ctl.env` + `fxproxy-ctl` 后把活交出去，更新逻辑只有一份
+（`deploy/linux/fxproxy-ctl.sh` 的 `cmd_update`）——一行命令、面板一键更新、
+`fxproxy update` 三条入口走同一条路。发行包部署的更新是：查 Release → 下载 tar.gz
+→ 校验结构 → 备份代码到 `.run/backup-<版本>-<时间>.tar.gz` → `--strip-components=1`
+盖到安装目录 → 重装依赖 → 重启；`config.json` / `.venv` / `.run` 全程不动。
+
+Windows 没有 curl 管道，重跑 `bootstrap.ps1`（或 `bootstrap.bat`）就是更新：
+它覆盖代码目录、保留 `config.json`，再交给 `install.ps1` 复用 `.venv`。
 
 面板更新会先查 GitHub Release，按当前系统取制品（Windows → `-win.zip`，Linux/macOS →
 `-linux.tar.gz`），下载校验后生成一个脱离面板进程的升级脚本：等 3 秒让页面收到响应 →

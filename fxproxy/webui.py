@@ -122,6 +122,17 @@ PAGE = r"""<!doctype html>
   th.sortable:hover { color:#c9d1d9; }
   th.sortable .arrow { color:#484f58; margin-left:3px; font-size:10px; }
   th.sortable.on .arrow { color:#58a6ff; }
+  /* ---- 主 tab ---- */
+  .tabs { display:flex; gap:6px; margin:20px 0 0; border-bottom:1px solid #21262d; flex-wrap:wrap; }
+  .tab { background:transparent; border:1px solid transparent; border-bottom:none; color:#8b949e;
+         padding:9px 18px; border-radius:8px 8px 0 0; cursor:pointer; font-size:14px; line-height:1.2; }
+  .tab:hover { color:#c9d1d9; background:#161b22; }
+  .tab.on { color:#58a6ff; background:#0d1117; border-color:#21262d; position:relative; top:1px; font-weight:600; }
+  /* 面板块隐藏用 !important：#loginCard 自身还有内联 display，不能让它压过 tab 切换 */
+  [data-pane][hidden] { display:none !important; }
+  @media (max-width:600px) {
+    .tab { padding:8px 12px; font-size:13px; }
+  }
 </style>
 </head>
 <body>
@@ -129,8 +140,14 @@ PAGE = r"""<!doctype html>
   <h1>fxproxy 控制面板</h1>
   <div class="sub">Firefox IP Protection · 多账号池 · 每账号每月 50GB 落地代理</div>
 
-  <div class="card" id="loginCard" style="display:none;">
-    <h2>① 添加账号 <button id="addClose" class="sm" style="float:right;font-weight:400;">收起</button></h2>
+  <div class="tabs" role="tablist">
+    <button class="tab on" data-tab="run" role="tab">运行管理</button>
+    <button class="tab" data-tab="acct" role="tab">账户设置</button>
+    <button class="tab" data-tab="sys" role="tab">系统设置</button>
+  </div>
+
+  <div class="card" id="loginCard" data-pane="acct" style="display:none;">
+    <h2>添加账号 <button id="addClose" class="sm" style="float:right;font-weight:400;">收起</button></h2>
     <div class="row">
       <label>方式</label>
       <select id="loginMode">
@@ -162,8 +179,8 @@ PAGE = r"""<!doctype html>
     <div class="muted">新账号追加进池；重复账号自动忽略。邮箱密码登录常被 Mozilla 风控拦（406），最省事是粘贴 refresh_token。</div>
   </div>
 
-  <div class="card">
-    <h2>② 运行状态</h2>
+  <div class="card" data-pane="run">
+    <h2>运行状态</h2>
     <div class="row">
       <span>状态：</span><span id="state" class="pill off">未运行</span>
       <span id="listen" class="muted"></span>
@@ -175,7 +192,13 @@ PAGE = r"""<!doctype html>
       <button id="stopBtn" class="stop" disabled>停止</button>
       <button id="testBtn">测试出口 IP</button>
     </div>
-    <div class="row" style="margin-top:12px;">
+    <div id="nodeWarn" style="display:none;margin-top:8px;color:#f0b400;font-size:13px;"></div>
+    <div id="egress" class="egress muted"></div>
+  </div>
+
+  <div class="card" data-pane="sys">
+    <h2>端口</h2>
+    <div class="row">
       <label>端口</label>
       HTTP <input id="httpPort" type="number" min="1" max="65535" inputmode="numeric"
                   style="width:96px;min-width:0;padding:6px 8px;">
@@ -188,10 +211,22 @@ PAGE = r"""<!doctype html>
       8080 / 1080 常见冲突（Tomcat、Jenkins、各类 dev server）。改完点「应用」，
       运行中的代理会按新端口自动重启；订阅里的端口一并跟着变。
     </div>
-    <div id="nodeWarn" style="display:none;margin-top:8px;color:#f0b400;font-size:13px;"></div>
-    <div id="egress" class="egress muted"></div>
-
     <div style="border-top:1px solid #21262d;margin-top:14px;padding-top:12px;">
+      <div class="muted">在浏览器 / 系统里把代理设为：</div>
+      <div style="margin-top:6px;">HTTP：<code id="httpAddr">127.0.0.1:8080</code>　
+          SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></div>
+      <div class="muted" style="font-size:12px;margin-top:4px;">
+        两个是同一后端的两个入口，任选其一：浏览器 / 系统代理 / 指纹浏览器填
+        <b>HTTP <span id="httpPortTxt">8080</span></b>；
+        只认 SOCKS5 的客户端（Telegram、部分爬虫库、<code>curl --socks5</code>）填
+        <b>SOCKS5 <span id="socksPortTxt">1080</span></b>。
+      </div>
+    </div>
+  </div>
+
+  <div class="card" data-pane="sys">
+    <h2>版本与更新</h2>
+    <div>
       <div class="row">
         <label>版本</label>
         <span id="verNow" class="pill off">—</span>
@@ -213,7 +248,7 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-pane="run">
     <h2>节点列表 <span id="nodeCount" class="muted"></span></h2>
     <div class="row">
       <button id="probeBtn" class="sm">测试全部节点延迟</button>
@@ -238,8 +273,8 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
-  <div class="card">
-    <h2>③ 账号池 <span id="acctCount" class="muted"></span></h2>
+  <div class="card" data-pane="acct">
+    <h2>账号池 <span id="acctCount" class="muted"></span></h2>
     <div class="row" style="margin-bottom:12px;">
       <label>调度策略</label>
       <select id="strategy">
@@ -258,17 +293,9 @@ PAGE = r"""<!doctype html>
     <div class="kv" style="margin-top:10px;"><span>总剩余</span><b id="totalRemain">—</b></div>
   </div>
 
-  <div class="card">
-    <div class="muted">在浏览器/系统里把代理设为：</div>
-    <div style="margin-top:6px;">HTTP：<code id="httpAddr">127.0.0.1:8080</code>　
-        SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></div>
-    <div class="muted" style="font-size:12px;margin-top:4px;">
-      两个是同一后端的两个入口，任选其一：浏览器 / 系统代理 / 指纹浏览器填
-      <b>HTTP <span id="httpPortTxt">8080</span></b>；
-      只认 SOCKS5 的客户端（Telegram、部分爬虫库、<code>curl --socks5</code>）填
-      <b>SOCKS5 <span id="socksPortTxt">1080</span></b>。
-    </div>
-    <div class="row" style="margin-top:10px;">
+  <div class="card" data-pane="sys">
+    <h2>订阅与导出</h2>
+    <div class="row">
       <label>Clash / Mihomo 订阅</label>
       <code id="subUrl" style="flex:1;word-break:break-all;">—</code>
       <button id="copySubBtn" class="sm">复制地址</button>
@@ -297,6 +324,26 @@ PAGE = r"""<!doctype html>
 const $ = id => document.getElementById(id);
 function fmt(b){ if(b==null) return "—"; const u=["B","KiB","MiB","GiB","TiB"]; let i=0,v=b;
   while(v>=1024&&i<u.length-1){v/=1024;i++;} return v.toFixed(v<10&&i>0?2:0)+u[i]; }
+
+// ---------------------------------------------------------------- 主 tab
+// 单页拆三块：运行管理 / 账户设置 / 系统设置。DOM 里各卡片用 data-pane 归属，
+// 切换只改 hidden —— 元素不销毁，正在跑的轮询和输入内容都不受打扰。
+const TAB_NAMES = ["run", "acct", "sys"];
+function switchTab(name, silent){
+  if(TAB_NAMES.indexOf(name) < 0) name = "run";
+  TAB_NAMES.forEach(t => {
+    const on = (t === name);
+    document.querySelectorAll('[data-pane="' + t + '"]').forEach(el => { el.hidden = !on; });
+    const btn = document.querySelector('.tab[data-tab="' + t + '"]');
+    if(btn) btn.classList.toggle("on", on);
+  });
+  // 刷新后停在同一个 tab 上，不用每次手动点回去
+  try { history.replaceState(null, "", "#" + name); } catch(e) {}
+  if(!silent && name === "acct") loadAccounts();
+}
+document.querySelectorAll('.tab[data-tab]').forEach(b => {
+  b.onclick = () => switchTab(b.getAttribute("data-tab"));
+});
 
 let NODE_COUNTS = {};
 let NODE_LABELS = {};
@@ -730,7 +777,8 @@ $("testBtn").onclick = async () => {
   $("egress").textContent="测试中…";
   const r = await fetch("/api/egress"); const d = await r.json();
   $("egress").textContent = d.ip ? ("当前出口 IP："+d.ip) : ("测试失败："+(d.error||"")); };
-(async()=>{ await loadServers(); loadNodes(false); await loadState(); await loadAccounts();
+(async()=>{ switchTab((location.hash||"#run").slice(1), true);
+  await loadServers(); loadNodes(false); await loadState(); await loadAccounts();
   verInit();
   setInterval(loadAccounts, 15000); setInterval(loadState, 5000);
   setInterval(loadServers, 60000); })();

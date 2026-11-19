@@ -117,17 +117,28 @@ fxproxy-ctl uninstall [--purge]
 ## 升级
 
 ```bash
+# 一行命令（不用先登录机器，和部署同款 curl 管道）
+curl -fsSL https://raw.githubusercontent.com/qq928820655/fxproxy-multi/main/deploy/linux/update.sh | bash
+curl -fsSL .../deploy/linux/update.sh | bash -s -- --check     # 只看有没有新版
+curl -fsSL .../deploy/linux/update.sh | bash -s -- --proxy https://ghproxy.net/
+
 fxproxy update               # 查最新 Release，按平台取制品，覆盖后重启
 fxproxy update --check       # 只看当前版本和平台，不联网
 fxproxy update -y            # 不确认
 fxproxy update --proxy http://127.0.0.1:7890   # GitHub 连不上时走代理
+fxproxy-ctl update --check   # 同上的底层实现
 ```
 
-和面板上的「一键更新」是同一套逻辑：下载 → 校验结构 → 生成脱离进程的升级脚本 →
-停服务 → 备份（`.run/backup-<版本>.tar.gz`）→ 覆盖 → `pip install -e` → 重启。
-`config.json` / `.venv` / `.run` 不动，日志写在 `.run/update.log`。
+`update.sh` 只是取壳：找到 `ctl.env` 与 `fxproxy-ctl` 后交给 `fxproxy-ctl update`，
+所以一行命令、面板一键更新、`fxproxy update` 三条入口共用同一份更新逻辑。
 
-git 部署的机器走 `git fetch + reset --hard`，发行包部署的走 tar 覆盖，脚本自己判断。
+发行包部署不再只是「重跑 install.sh」：`fxproxy-ctl update` 会查 Release → 下载 tar.gz
+→ 校验结构 → 备份代码到 `.run/backup-<版本>-<时间>.tar.gz` → `--strip-components=1`
+盖到安装目录 → `pip install -e` → 重启。`config.json` / `.venv` / `.run` 不动。
+
+制品包内顶层目录固定叫 `fxproxy`（版本只体现在压缩包名 `fxproxy-<版本>-linux.tar.gz`），
+所以手工升级也就是 `tar xzf fxproxy-*-linux.tar.gz -C /opt --strip-components=1`。
+git 部署的机器走 `git fetch + reset --hard`，脚本自己判断。
 
 ## 端口
 

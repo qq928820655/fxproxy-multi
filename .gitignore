@@ -26,3 +26,6 @@ tools/.crx-key.pem
 *.tmp.yaml
 *.tmp.log
 *.tmp.json
+
+# 项目本地记忆（工具目录，不进仓库）
+.workbuddy/
