@@ -1436,6 +1436,8 @@ class Panel:
                 await _need(addon_len)
             cmd = (await _need(1))[0]
             if cmd != 1:                                      # TCP only
+                print(f"[vless] 拒绝 cmd={cmd}（非 TCP：多为 UDP/DNS）"
+                      f" node={node_host}", flush=True)
                 raise ConnectionError(f"unsupported vless command {cmd}")
             port = int.from_bytes(await _need(2), "big")
             atyp = (await _need(1))[0]
@@ -1457,7 +1459,9 @@ class Panel:
             reader, writer, leftover = await self._vless_open_tunnel(
                 node_host, node_port, target, port
             )
-        except Exception:
+        except Exception as _e:
+            print(f"[vless] 握手失败 target={locals().get('target','?')}:"
+                  f"{locals().get('port','?')} {_e!r}", flush=True)
             try:
                 await ws.close(code=web.WSCloseCode.ABNORMAL_CLOSURE)
             except Exception:
@@ -1465,6 +1469,7 @@ class Panel:
             return ws
 
         # vless response header: version 0, no addons
+        print(f"[vless] 隧道建立 {target}:{port} via {node_host}", flush=True)
         try:
             await ws.send_bytes(b"\x00\x00")
         except Exception:
@@ -1474,16 +1479,20 @@ class Panel:
                 pass
             return ws
 
+        _stat = {"up": 0, "down": 0}
+
         async def _w2t():
             nonlocal buf
             if buf:
                 writer.write(buf)
                 await writer.drain()
+                _stat["up"] += len(buf)
                 buf = b""
             async for msg in ws:
                 if msg.type == web.WSMsgType.BINARY:
                     writer.write(msg.data)
                     await writer.drain()
+                    _stat["up"] += len(msg.data)
                 else:
                     break
 
@@ -1491,11 +1500,13 @@ class Panel:
             try:
                 if leftover:
                     await ws.send_bytes(leftover)
+                    _stat["down"] += len(leftover)
                 while True:
                     data = await reader.read(65536)
                     if not data:
                         break
                     await ws.send_bytes(data)
+                    _stat["down"] += len(data)
             except Exception:
                 pass
 
@@ -1511,6 +1522,8 @@ class Panel:
             for t in (t_up, t_down):
                 if not t.done():
                     t.cancel()
+            print(f"[vless] 结束 {target}:{port} up={_stat['up']}B "
+                  f"down={_stat['down']}B", flush=True)
             try:
                 writer.close()
             except Exception:
@@ -1616,29 +1629,23 @@ class Panel:
                 if nodes:
                     names = "".join(f"      - fxproxy-{c}-{n}\n"
                                     for c, n, _, _ in nodes)
-                    # 全量节点进负载均衡组；lazy: true 让 mihomo 不主动
-                    # 定期健康检查（否则 34 条隧道并发建连会压面板），
-                    # 只在真正使用时按需测速。
+                    # 只留 url-test（固定最优节点），不再用 load-balance
+                    # round-robin。轮询会对每条新连接拨一个新节点、新建
+                    # 一条到网关的 wss，浏览器一开网页几十并发就把到网关
+                    # 的链路打满（实测日志大量 context deadline exceeded）。
+                    # url-test 选中一个节点后保持不变，只在它失效时切换。
+                    # lazy:true 让 mihomo 不主动定期测速，只在用时按需。
                     lb_group = (
-                        "\n  - name: \"fxproxy-auto\"\n"
-                        "    type: load-balance\n"
-                        "    url: https://www.gstatic.com/generate_204\n"
-                        "    interval: 300\n"
-                        "    lazy: true\n"
-                        "    strategy: round-robin\n"
-                        "    proxies:\n"
-                        + names
-                        + "\n  - name: \"fxproxy-fast\"\n"
+                        "\n  - name: \"fxproxy-fast\"\n"
                         "    type: url-test\n"
                         "    url: https://www.gstatic.com/generate_204\n"
-                        "    interval: 300\n"
+                        "    interval: 600\n"
                         "    tolerance: 80\n"
                         "    lazy: true\n"
                         "    proxies:\n"
                         + names
                     )
                     new_group = ("      - fxproxy-fast\n"
-                                 "      - fxproxy-auto\n"
                                  + names)
                 else:
                     lb_group = ""
