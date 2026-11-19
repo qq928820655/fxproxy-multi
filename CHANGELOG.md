@@ -25,6 +25,10 @@
 - **部署**：`Dockerfile` + `docker-compose.yml` + `deploy/container_entry.py`（双进程托管）+
   `deploy/oracle-free-bootstrap.sh`（Oracle Always Free 一键）+ systemd 模板。
   确认 GitHub Codespaces / Actions 不适合做代理出口（L7 端口转发过不了 CONNECT/SOCKS5 裸 TCP）。
+- **Windows 一键部署**：`deploy/windows/`（`install.bat` / `start.bat` / `stop.bat` / `status.bat`
+  外壳 + `install.ps1` / `ctl.ps1` 主体）。装在 `.venv` 里，pid 与日志落 `.run/`，
+  支持 `-Country` / `-CookieFile` / `-HttpPort` / `-IndexUrl` / `-Proxy` / `-NoProxy` /
+  `-Autostart` / `-Uninstall`。已实测：装 → 起 → 状态 → 停，面板 `GET /` 返回 200。
 - **CLI**：`-V/--version`。
 
 ### 修复
@@ -37,6 +41,10 @@
 - 面板节点列表为空、额度显示「无限」：改为以 `limited_bandwidth` 为权威，优先显示「已用 / 月度」。
 - 插件 `popup.js` 增加 `executeScript({files:["content.js"]})` 兜底注入，
   指纹浏览器或长时间未刷新的标签页不自动跑 content script 时也能取到凭证。
+- `-c/--config` 原先只能写在子命令前（`fxproxy -c X run`），写成 `fxproxy run -c X` 会
+  `unrecognized arguments`。现在每个子命令也挂了 `-c`（`default=SUPPRESS`，不覆盖顶层值），两个位置都认。
+- Windows 部署脚本三处 `-c` 位置全部改成前置；`config.json` 由 here-string 生成，
+  修掉之前数组字面量拼接导致 JSON 中间插换行的问题。
 
 ### 打包
 
@@ -49,8 +57,9 @@
 
 ### 测试
 
-`test_pool`(37) / `test_cookieutil`(8) / `test_webapi`(55) / `test_cli`(16) /
-`test_geo`(7) / `test_crx`(14) / `test_zip`(20) / `test_chrome_formats.js`(9)
+`test_pool`(37) / `test_cookieutil`(8) / `test_webapi`(55) / `test_cli`(24) /
+`test_geo`(7) / `test_crx`(14) / `test_zip`(20) / `test_windows_deploy`(44) /
+`test_chrome_formats.js`(9)
 
 ## [0.2.0]
 

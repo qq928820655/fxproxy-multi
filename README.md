@@ -206,6 +206,8 @@ deploy\windows\stop.bat      :: 全部停掉
 deploy\windows\status.bat    :: 进程 / 端口 / 额度 / 日志末尾
 ```
 
+三个脚本都能加 `-q` 结尾，跳过「请按任意键继续」，方便放进别的批处理里串起来。
+
 端口、凭证导入、日志位置、故障对照表见 [deploy/windows/README.md](deploy/windows/README.md)。
 
 ### Windows —— 手动安装（不想用脚本时）
