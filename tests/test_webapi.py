@@ -81,6 +81,7 @@ async def main():
             web.post("/api/strategy", panel.api_strategy),
             web.post("/api/login", panel.api_login),
             web.get("/api/config", panel.api_config),
+            web.get("/clash.yaml", panel.api_clash),
         ])
         async with TestClient(TestServer(app)) as cli:
             print("[api] state")
@@ -153,6 +154,15 @@ async def main():
             html = await r.text()
             check("调度策略" in html and "账号池" in html, "面板含多账号 UI")
             check("cookieData" in html and "Cookie / 插件导出" in html, "面板含 cookie 导入 UI")
+            check("subUrl" in html and "/clash.yaml" in html, "面板含订阅地址 UI")
+
+            print("[api] clash.yaml 订阅")
+            r = await cli.get("/clash.yaml")
+            y = await r.text()
+            check(r.status == 200 and "proxies:" in y, "订阅返回 YAML")
+            check("type: http" in y and "type: socks5" in y, "订阅含 HTTP+SOCKS5 节点")
+            check("127.0.0.1" in y and "port: 8080" in y, "订阅节点指向本地代理端口")
+            check(r.headers.get("Content-Type", "").startswith("text/yaml"), "订阅 Content-Type 正确")
 
     print(f"\nALL PASS ({PASS} checks)")
 

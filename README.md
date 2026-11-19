@@ -175,6 +175,35 @@ fxproxy web                                # 打开控制面板
 
 面板运行后，把浏览器/系统代理指到 `127.0.0.1:8080`(HTTP) 或 `127.0.0.1:1080`(SOCKS5) 即可。
 
+### 订阅地址（Clash / Mihomo）
+
+不出机场式远程节点订阅——fxproxy 本身是本地落地代理，账号轮换和节点切换都在它内部做。
+但它会生成一份指向本地监听端口的 Clash/Mihomo 配置，可以当订阅链接导入：
+
+- 面板方式：打开面板，底部那张卡片里有订阅地址 `http://<面板地址>:8765/clash.yaml`，点「复制地址」填进 Clash/Mihomo 的「订阅链接」。
+- 命令行方式：不启面板也能导出文件
+  ```bash
+  fxproxy export-clash                          # 打印到屏幕
+  fxproxy export-clash -o fxproxy.yaml          # 写入文件
+  fxproxy export-clash --server 192.168.1.50 -o fxproxy.yaml   # 异机导入指定 IP
+  ```
+
+订阅内容只有两个节点：`fxproxy-http`（HTTP，8080）和 `fxproxy-socks5`（SOCKS5，1080），
+策略组 `PROXY` 可选节点或 DIRECT，最后一条 `MATCH,PROXY` 全走代理。
+
+异机/手机导入要注意：订阅里的 server 默认是 `127.0.0.1`，那指向客户端自己，连不上。两种解法：
+
+1. 面板监听 `0.0.0.0`（`fxproxy web --web-host 0.0.0.0`）后用该机器的局域网 IP 访问面板，`/clash.yaml` 会自动把 server 填成访问用的 IP；
+2. 配置里写 `sub_server`，或导出时 `--server <可达 IP/域名>` 覆盖。
+
+代理服务本身也要 `--host 0.0.0.0` 才会监听外网口（面板只管订阅生成，不管代理监听）：
+```
+fxproxy run --host 0.0.0.0
+```
+对外端口无鉴权，自己加防火墙白名单或反向代理。
+
+导入订阅只是让客户端连上本机端口，**必须先 `fxproxy run` 把代理跑起来**，否则节点不通。
+
 ## 使用
 
 ### 0. 可视化控制面板（最省事）
@@ -398,6 +427,7 @@ journalctl -u fxproxy@$USER -f
 | `fxproxy/proxyserver.py` | 本地 HTTP CONNECT + SOCKS5 服务，上游 TLS+CONNECT 到 Fastly 节点 |
 | `fxproxy/config.py`      | 配置读写 |
 | `fxproxy/cookieutil.py`  | 解析插件导出 JSON / Cookie 头 / 多个 token，统一提取凭证 |
+| `fxproxy/clashconf.py`   | 生成 Clash/Mihomo 订阅 YAML（指向本地 HTTP/SOCKS5 监听） |
 | `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口、cookie 导入 |
 | `fxproxy/cli.py`         | 命令行入口（login / accounts / status / token / servers / run / web） |
 | `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken |

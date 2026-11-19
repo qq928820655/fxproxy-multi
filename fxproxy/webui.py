@@ -149,6 +149,15 @@ PAGE = """<!doctype html>
     <div class="muted">在浏览器/系统里把代理设为：</div>
     <div style="margin-top:6px;">HTTP：<code id="httpAddr">127.0.0.1:8080</code>　
         SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></div>
+    <div class="row" style="margin-top:10px;">
+      <label>Clash / Mihomo 订阅</label>
+      <code id="subUrl" style="flex:1;word-break:break-all;">—</code>
+      <button id="copySubBtn" class="sm">复制地址</button>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:4px;">
+      把上面的 URL 填进 Clash/Mihomo 的「订阅链接」导入。异机导入需让面板监听 0.0.0.0
+      并配置 <code>sub_server</code> 为本机可达 IP，否则订阅里的 127.0.0.1 指向客户端自己。
+    </div>
     <div class="row" style="margin-top:14px;">
       <button id="copyCfgBtn">复制配置（config.json）</button>
       <span id="copyMsg" class="muted"></span>
@@ -190,8 +199,10 @@ async function loadState(){
   $("startBtn").disabled = !AUTHED; $("stopBtn").disabled = !s.running;
   $("startBtn").textContent = s.running ? "切换/重启" : "启动";
   $("testBtn").disabled = !AUTHED;
-  $("httpAddr").textContent = s.host+":"+s.http_port;
-  $("socksAddr").textContent = s.host+":"+s.socks_port;
+  const shownHost = (s.host==="0.0.0.0" || s.host==="::") ? location.hostname : s.host;
+  $("httpAddr").textContent = shownHost+":"+s.http_port;
+  $("socksAddr").textContent = shownHost+":"+s.socks_port;
+  $("subUrl").textContent = location.origin + "/clash.yaml";
   $("listen").textContent = s.running ? ("出口："+(s.country||"任意")) : "";
   $("strategy").value = s.strategy || "round-robin";
   $("acctCount").textContent = "("+(s.account_count||0)+" 个)";
@@ -287,6 +298,11 @@ $("copyCfgBtn").onclick = async () => {
     catch(_) { $("copyMsg").textContent = "复制失败，请手动选中："+d.config; }
     ta.remove();
   }
+};
+$("copySubBtn").onclick = async () => {
+  const u = $("subUrl").textContent;
+  try { await navigator.clipboard.writeText(u); $("copyMsg").textContent = "订阅地址已复制✓"; }
+  catch(e) { $("copyMsg").textContent = "订阅地址：" + u; }
 };
 $("testBtn").onclick = async () => {
   $("egress").textContent="测试中…";
@@ -561,6 +577,31 @@ class Panel:
         except Exception as e:
             return web.json_response({"error": str(e)})
 
+    async def api_clash(self, req):
+        """Clash/Mihomo subscription served at /clash.yaml.
+
+        The proxy host defaults to the Host header used to reach this panel
+        (LAN IP / VPS domain), so importing from another device just works.
+        A configured ``sub_server`` overrides it for split-horizon setups.
+        """
+        from . import clashconf
+        host = req.host.split(":", 1)[0]  # strip panel port
+        # 0.0.0.0 is a bind address, not a reachable client address
+        if host in ("0.0.0.0", "::", "*"):
+            host = "127.0.0.1"
+        server = self.cfg.get("sub_server") or host
+        text = clashconf.build_clash_yaml(
+            server=server,
+            http_port=self.cfg.get("http_port", 8080),
+            socks_port=self.cfg.get("socks_port", 1080),
+        )
+        return web.Response(
+            text=text,
+            content_type="text/yaml",
+            charset="utf-8",
+            headers={"Content-Disposition": 'attachment; filename="fxproxy.yaml"'},
+        )
+
     async def api_config(self, req):
         if self.pool is None or not self.pool.tokens:
             return web.json_response({"error": "尚未登录/无凭证"})
@@ -615,6 +656,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/login", panel.api_login),
         web.get("/api/egress", panel.api_egress),
         web.get("/api/config", panel.api_config),
+        web.get("/clash.yaml", panel.api_clash),
     ])
     url = f"http://{web_host}:{web_port}"
     print(f"[fxproxy] 控制面板: {url}  (Ctrl+C 退出)")

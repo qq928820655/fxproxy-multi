@@ -235,6 +235,27 @@ def cmd_run(args):
     return 0
 
 
+def cmd_export_clash(args):
+    """Write a Clash/Mihomo YAML pointing at the local listener."""
+    from . import clashconf
+    cfg = cfgmod.load(args.config)
+    server = args.server or cfg.get("sub_server") or cfg.get("host", "127.0.0.1")
+    if server in ("0.0.0.0", "::"):
+        server = "127.0.0.1"
+    text = clashconf.build_clash_yaml(
+        server=server,
+        http_port=args.http_port or cfg.get("http_port", 8080),
+        socks_port=args.socks_port or cfg.get("socks_port", 1080),
+    )
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"[+] Clash 订阅已写入 {args.output}（server={server}）")
+    else:
+        print(text)
+    return 0
+
+
 def cmd_web(args):
     from .webui import run_web
     run_web(
@@ -288,6 +309,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="number of nodes to try per account (default 3)")
     rp.set_defaults(func=cmd_run)
 
+    ep = sub.add_parser("export-clash", help="export a Clash/Mihomo subscription YAML")
+    ep.add_argument("--server", help="proxy host clients use (default: config host / 127.0.0.1)")
+    ep.add_argument("--http-port", type=int)
+    ep.add_argument("--socks-port", type=int)
+    ep.add_argument("-o", "--output", help="write to file instead of stdout")
+    ep.set_defaults(func=cmd_export_clash)
+
     wp = sub.add_parser("web", help="open the local web control panel")
     wp.add_argument("--web-host", default="127.0.0.1")
     wp.add_argument("--web-port", type=int, default=8765)
@@ -312,8 +340,9 @@ def interactive(config_path=None):
         print("  5) 启动代理 (run)")
         print("  6) 可视化控制面板 (web)")
         print("  7) 显示 refresh_token (拷到服务器用)")
-        print("  8) 退出")
-        choice = input("选择指令 [1-8]: ").strip()
+        print("  8) 导出 Clash/Mihomo 订阅 (export-clash)")
+        print("  9) 退出")
+        choice = input("选择指令 [1-9]: ").strip()
         try:
             if choice == "1":
                 mode = _prompt("凭证方式: 1=邮箱密码  2=sessionToken  3=Cookie/插件导出", "1")
@@ -361,7 +390,13 @@ def interactive(config_path=None):
                 cmd_web(a)
             elif choice == "7":
                 cmd_token(ns)
-            elif choice in ("8", "q", "quit", "exit"):
+            elif choice == "8":
+                a = argparse.Namespace(config=config_path, server=None,
+                                       http_port=None, socks_port=None, output=None)
+                a.server = _prompt("客户端访问代理的 IP/域名(留空=127.0.0.1)", "") or None
+                a.output = _prompt("输出文件(留空=打印到屏幕)", "") or None
+                cmd_export_clash(a)
+            elif choice in ("9", "q", "quit", "exit"):
                 print("bye")
                 return 0
             else:
