@@ -14,9 +14,14 @@ import webbrowser
 from aiohttp import web
 
 from . import config as cfgmod
-from . import fxa_auth
 from .guardian import GuardianClient, NotEnrolledError, TokenPool
 from .proxyserver import NodePicker, ProxyServer
+
+# fxa_auth（curl_cffi + pyfxa）只在登录时才用，延迟导入：
+# 机房无头环境只做代理调度不该被登录依赖拖累。
+def _fxa():
+    from . import fxa_auth
+    return fxa_auth
 
 PAGE = """<!doctype html>
 <html lang="zh">
@@ -459,21 +464,25 @@ class Panel:
                 gc = GuardianClient(rt)
                 await asyncio.to_thread(gc.quota)  # 先验证可用
                 res = {"refresh_token": rt}
-            elif mode == "browser":
-                st = await asyncio.to_thread(fxa_auth.browser_login)
-                res = await asyncio.to_thread(fxa_auth.bootstrap, session_token=st)
-            elif mode == "session":
-                st = (body.get("session_token") or "").strip()
-                if not st:
-                    return web.json_response({"error": "请粘贴 sessionToken"})
-                res = await asyncio.to_thread(fxa_auth.bootstrap, session_token=st)
+            elif mode in ("browser", "session", "password"):
+                fxa = _fxa()  # 只在这三种登录模式才拉起重型依赖
+                if mode == "browser":
+                    st = await asyncio.to_thread(fxa.browser_login)
+                    res = await asyncio.to_thread(fxa.bootstrap, session_token=st)
+                elif mode == "session":
+                    st = (body.get("session_token") or "").strip()
+                    if not st:
+                        return web.json_response({"error": "请粘贴 sessionToken"})
+                    res = await asyncio.to_thread(fxa.bootstrap, session_token=st)
+                else:
+                    email = (body.get("email") or "").strip()
+                    password = body.get("password") or ""
+                    if not (email and password):
+                        return web.json_response({"error": "请填邮箱和密码"})
+                    res = await asyncio.to_thread(
+                        fxa.bootstrap, email=email, password=password)
             else:
-                email = (body.get("email") or "").strip()
-                password = body.get("password") or ""
-                if not (email and password):
-                    return web.json_response({"error": "请填邮箱和密码"})
-                res = await asyncio.to_thread(
-                    fxa_auth.bootstrap, email=email, password=password)
+                return web.json_response({"error": f"未知登录方式: {mode}"})
 
             rt = res["refresh_token"]
             if self.pool is None:

@@ -1,4 +1,10 @@
+# 运行代理所需（机房无头环境只需这两个）
 requests>=2.28
-pyfxa>=0.8
-curl_cffi>=0.7
 aiohttp>=3.9
+
+# 首次登录/入组才需要（在住宅 IP 上跑 login 时安装）
+# pyfxa>=0.8
+# curl_cffi>=0.7
+
+# 面板"浏览器登录"按钮才需要
+# playwright>=1.40

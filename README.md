@@ -258,6 +258,84 @@ journalctl -u fxproxy@$USER -f               # 看日志
 
 > 若只想临时后台跑：`nohup fxproxy run --country US >/tmp/fxproxy.log 2>&1 &`。
 
+## Linux 无头 / 机房 IP 部署
+
+结论：**运行代理完全支持，首次登录必须在住宅 IP 做。**
+
+运行链路（refresh → access → proxy pass → CONNECT）全程 HTTPS，
+不需要浏览器、不需要显示服务器、机房 IP 不被拦。`fxproxy run` 是纯命令行，
+无头直接跑。
+
+Mozilla 只对 FxA 登录/注册接口（`/account/login`、`/account/create`）按机房 IP
+风控（HTTP 406）。所以凭证要在家里的宽带/手机网络上拿一次，
+
+```bash
+# === 在住宅 IP 的机器上（本机）做一次 ===
+pip install '.[login]'                       # pyfxa + curl_cffi，只在登录时用
+fxproxy login --email you@example.com        # 或面板"浏览器登录"（需 pip install playwright + playwright install chromium）
+fxproxy token -q                             # 输出 refresh_token，每行一个，拷走
+```
+
+refresh_token 是便携的，换网络不失效。搬到机房：
+
+```bash
+# === 机房无头 VPS ===
+python3 -m venv .venv && source .venv/bin/activate
+pip install .                                # 只需 requests + aiohttp，不装登录库
+```
+
+凭证三种注入方式（任选）：
+
+```bash
+# 1) 环境变量（推荐，不落盘）—— 单账号 / 多账号
+export FXPROXY_REFRESH_TOKEN="TOKEN_1"
+export FXPROXY_REFRESH_TOKENS="TOKEN_1,TOKEN_2,TOKEN_3"
+
+# 2) 配置文件（注意权限）
+mkdir -p ~/.config/fxproxy
+cat > ~/.config/fxproxy/config.json <<'EOF'
+{
+  "refresh_tokens": ["TOKEN_1", "TOKEN_2"],
+  "pool_strategy": "round-robin",
+  "cooldown_seconds": 300,
+  "country": "US",
+  "host": "0.0.0.0",
+  "http_port": 8080,
+  "socks_port": 1080,
+  "failover": 3
+}
+EOF
+chmod 600 ~/.config/fxproxy/config.json
+
+# 3) systemd 里写 Environment=FXPROXY_REFRESH_TOKENS=... （见上一节模板）
+```
+
+启动：
+
+```bash
+fxproxy accounts                             # 确认账号已加载、配额可见
+fxproxy run --country US                     # 前台
+# 或面板（无头加 --no-open，不开浏览器；web 服务本身不需要显示器）
+fxproxy web --no-open --web-host 0.0.0.0 --web-port 8765
+```
+
+开机自启：
+
+```bash
+sudo cp deploy/fxproxy@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fxproxy@$USER
+journalctl -u fxproxy@$USER -f
+```
+
+无头注意事项：
+
+- `fxproxy run` / `accounts` / `status` / `servers` 不 import 登录库，机房只需 `requests` + `aiohttp`。
+- `fxproxy web` 在无头下加 `--no-open`，否则 `webbrowser.open()` 会静默失败（不致命）。
+- "浏览器登录"按钮在无头机房不可用（无显示服务器 + 机房 IP 风控）。凭证走住宅 IP 拿好后粘贴或环境变量注入。
+- 若要对外开放代理端口，`host` 设 `0.0.0.0` 并配防火墙/鉴权——本工具自身不做认证。
+- 代理只走 TCP；UDP 不转发。
+
 ## 安全提示
 
 - 默认只监听 `127.0.0.1`；若要对外/当公共落地，请自行加认证或防火墙（本工具不做鉴权）。

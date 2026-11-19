@@ -7,9 +7,15 @@ import getpass
 import sys
 
 from . import config as cfgmod
-from .fxa_auth import bootstrap
 from .guardian import GuardianClient, NotEnrolledError, TokenPool
 from .proxyserver import NodePicker, ProxyServer
+
+# fxa_auth 依赖 curl_cffi + pyfxa，只有首次登录/bootstrap 才用。
+# 机房无头环境只跑代理时不需要这两个库，因此延迟到 cmd_login 内导入，
+# 避免 `fxproxy run` 被重型登录依赖拖累。
+def _bootstrap():
+    from .fxa_auth import bootstrap
+    return bootstrap
 
 
 def _fmt_bytes(n) -> str:
@@ -47,7 +53,7 @@ def cmd_login(args):
         return 2
 
     print("[*] bootstrapping credentials ...", flush=True)
-    res = bootstrap(session_token=session_token, email=email, password=password)
+    res = _bootstrap()(session_token=session_token, email=email, password=password)
     cfg = cfgmod.load(args.config)
     rt = res["refresh_token"]
     tokens = cfg.get("refresh_tokens") or []

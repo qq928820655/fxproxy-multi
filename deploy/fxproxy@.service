@@ -1,17 +1,25 @@
 [Unit]
-Description=fxproxy - Firefox IP Protection landing proxy
+Description=fxproxy - Firefox IP Protection landing proxy (multi-account)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Run as your own user (edit these two lines):
+# 以运行用户身份启动（%i = 用户名）
 User=%i
-# Refresh token can live in the config file (~/.config/fxproxy/config.json)
-# or be injected here without touching disk:
+
+# === 凭证二选一 ===
+# 方式 A：配置文件 ~/.config/fxproxy/config.json（权限 600）
+#
+# 方式 B：环境变量注入，不落盘（机房无头推荐）
+#   单账号：
 #Environment=FXPROXY_REFRESH_TOKEN=xxxxxxxx
-# Optional: point at a specific config file
+#   多账号（逗号分隔，顺序 = 账号 #1..#N）：
+#Environment=FXPROXY_REFRESH_TOKENS=TOKEN_1,TOKEN_2,TOKEN_3
+#   指定配置文件路径：
 #Environment=FXPROXY_CONFIG=/etc/fxproxy/config.json
+
+# run 是纯命令行路径：不启动浏览器、不需要显示服务器，无头可直接跑。
 ExecStart=/usr/local/bin/fxproxy run --country US
 Restart=on-failure
 RestartSec=5
