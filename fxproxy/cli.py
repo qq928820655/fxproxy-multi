@@ -313,10 +313,14 @@ def cmd_web(args):
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from . import __version__
+
     p = argparse.ArgumentParser(
         prog="fxproxy",
         description="Standalone landing proxy over Firefox IP Protection (50GB/mo per account).",
     )
+    p.add_argument("-V", "--version", action="version",
+                   version=f"fxproxy {__version__}")
     p.add_argument("-c", "--config", help="config file path")
     sub = p.add_subparsers(dest="cmd", required=False)
 

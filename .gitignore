@@ -15,3 +15,6 @@ fxproxy-chrome-extension/
 bridge/*
 !bridge/README.md
 !bridge/config.example.json
+
+# CRX 签名私钥：首次 build_crx.py 自动生成，保留在本地以固定 crx_id
+tools/.crx-key.pem

@@ -1,0 +1,9 @@
+# 扩展源码统一 LF：zip/crx 是按字节打包的，工作区一旦被转成 CRLF，
+# 产物就会和源码不一致（tests/test_zip.py 会报 manifest.json 不一致）。
+chrome-extension/* text eol=lf
+
+# 打包/测试脚本也用 LF，避免 bash 下 CRLF 造成的解释器问题
+tools/*.py text eol=lf
+tests/*.py text eol=lf
+
+* text=auto

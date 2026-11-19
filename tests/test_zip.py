@@ -85,5 +85,22 @@ with tempfile.TemporaryDirectory() as td:
     except SystemExit as e:
         check("missing.js" in str(e), "抛错并指出缺失文件")
 
+print("[zip] 仓库里分发的 zip 不能是陈旧产物")
+shipped = ROOT / "fxproxy-chrome-extension.zip"
+src_manifest = json.loads((bz.SRC_DIR / "manifest.json").read_text(encoding="utf-8"))
+if shipped.exists():
+    sv = bz.verify_zip(shipped)
+    check(sv["ok"] is True, "分发 zip 结构合法")
+    with zipfile.ZipFile(shipped) as z:
+        top = sv["top"]
+        pkg_manifest = json.loads(z.read(f"{top}/manifest.json").decode("utf-8"))
+        check(pkg_manifest["version"] == src_manifest["version"],
+              f"分发 zip 版本号 = 源码版本号（{pkg_manifest['version']}）")
+        for f in ("manifest.json", "content.js", "formats.js", "popup.html", "popup.js"):
+            check(z.read(f"{top}/{f}") == (bz.SRC_DIR / f).read_bytes(),
+                  f"分发 zip 的 {f} 与源码逐字节一致")
+else:
+    print("  --  未找到分发 zip（跳过，先跑 tools/build_zip.py）")
+
 print(f"\nPASS={PASS}  FAIL={FAIL}")
 sys.exit(1 if FAIL else 0)

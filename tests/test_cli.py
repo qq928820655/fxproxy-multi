@@ -140,6 +140,19 @@ def main():
         check(rc == 1 and "登录失败" in err and "Traceback" not in err,
               "依赖缺失: 友好报错而非 traceback")
 
+    # ---- 版本入口：--version 必须退出码 0 且打出与包一致的版本号 ----
+    print("[cli] --version")
+    import fxproxy
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            cli_mod.build_parser().parse_args(["--version"])
+        check(False, "--version 应当以 SystemExit(0) 结束")
+    except SystemExit as e:
+        check(e.code == 0, "--version 退出码 0")
+    check(f"fxproxy {fxproxy.__version__}" in buf.getvalue(),
+          f"--version 输出含 fxproxy {fxproxy.__version__}")
+
     print(f"\nALL CLI TESTS PASSED ({PASS} checks)")
 
 

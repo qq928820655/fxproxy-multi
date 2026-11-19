@@ -1,5 +1,8 @@
 # fxproxy — Firefox IP Protection 独立落地代理
 
+> **版本**：`fxproxy 0.3.0` · Chrome 扩展 `1.1.0` · 变更记录见 [CHANGELOG.md](CHANGELOG.md)
+> 运行时确认：`fxproxy --version`
+
 把 Firefox 内置的 **IP Protection**（Mozilla 给每个账号每月免费 **50GB** 的代理流量）
 做成一个可独立运行的落地代理：本地起 **SOCKS5 + HTTP** 代理，出口走 Mozilla 的
 Fastly 节点（29 个国家可选）。

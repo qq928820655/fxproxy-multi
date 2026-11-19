@@ -36,6 +36,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "chrome-extension"
 DEFAULT_OUT = ROOT / "fxproxy-chrome-extension.crx"
+KEY_PATH = Path(__file__).resolve().parent / ".crx-key.pem"
 MAGIC = b"Cr24"
 EXT_FILES = ("manifest.json", "content.js", "formats.js", "popup.html", "popup.js")
 
@@ -97,11 +98,32 @@ def build_zip() -> bytes:
 
 
 def _key():
+    """复用固定私钥，保证每次生成的 crx_id 不变。
+
+    随机 key 会让扩展 ID 每次都变，浏览器会把重装当成新扩展、丢掉原有
+    storage —— 对本地自签名包来说这个稳定性是必要的。首次运行会生成
+    tools/.crx-key.pem（已随仓库提交，非机密，仅作扩展身份）。
+    """
     try:
+        from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
     except ImportError:
         raise SystemExit("cryptography 未安装：pip install cryptography")
-    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    if KEY_PATH.exists():
+        return serialization.load_pem_private_key(KEY_PATH.read_bytes(), password=None)
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    KEY_PATH.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    try:
+        KEY_PATH.chmod(0o600)
+    except OSError:
+        pass
+    return key
 
 
 def _spki(private_key) -> bytes:
