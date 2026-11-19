@@ -489,6 +489,7 @@ class Panel:
         self._st_srv = None
         self._st_lock = asyncio.Lock()
         self._bench = None
+        self._preconn = None
 
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
@@ -1008,6 +1009,62 @@ class Panel:
     _nodes_cache: dict = {"data": None, "ts": 0.0}
     _egress_cache: dict = {}
 
+    class _PreconnPool:
+        """Idle TLS-ready connections to Fastly nodes.
+
+        Each new client connection otherwise pays a full cross-region TLS
+        handshake (~300ms) before CONNECT. Keeping a couple of pre-handshaked
+        sockets per node turns that into a bare CONNECT round-trip. A tunnel
+        can serve exactly one CONNECT, so entries are consumed, not reused;
+        the pool is lazily replenished after each take.
+        """
+
+        def __init__(self, ssl_ctx, per_node=2, idle_ttl=40):
+            self._ssl = ssl_ctx
+            self._per = per_node
+            self._ttl = idle_ttl
+            self._idle: dict = {}
+            self._locks: dict = {}
+
+        def _lock(self, host):
+            l = self._locks.get(host)
+            if l is None:
+                l = self._locks[host] = asyncio.Lock()
+            return l
+
+        async def _open(self, host, port):
+            return await asyncio.wait_for(
+                asyncio.open_connection(
+                    host, port, ssl=self._ssl, server_hostname=host),
+                timeout=6,
+            )
+
+        async def acquire(self, host, port):
+            async with self._lock(host):
+                lst = self._idle.get(host, [])
+                now = time.monotonic()
+                while lst:
+                    r, w, ts = lst.pop()
+                    if now - ts < self._ttl and not r.at_eof() and not w.is_closing():
+                        asyncio.create_task(self._replenish(host, port))
+                        return r, w
+                    try:
+                        w.close()
+                    except Exception:
+                        pass
+            return await self._open(host, port)
+
+        async def _replenish(self, host, port):
+            async with self._lock(host):
+                lst = self._idle.setdefault(host, [])
+                if len(lst) >= self._per:
+                    return
+                try:
+                    r, w = await self._open(host, port)
+                    lst.append((r, w, time.monotonic()))
+                except Exception:
+                    pass
+
     async def _probe_egress(self, host, port, sem):
         """Tunnel through one node in plaintext HTTP to ipify; return its
         real egress IP (what target websites actually see)."""
@@ -1068,6 +1125,7 @@ class Panel:
         if self._bench is None:
             self._bench = ProxyServer(
                 self.pool, NodePicker(self.pool.clients[0], None), failover=1)
+            self._preconn = Panel._PreconnPool(self._bench._ssl)
         bench = self._bench
         accounts = self.pool.pick_many(len(self.pool.clients))
         last_err = None
@@ -1080,15 +1138,33 @@ class Panel:
                 last_err = e
                 self.pool.report_failure(gc)
                 continue
+            conn = None
+            try:
+                conn = await self._preconn.acquire(node_host, node_port)
+            except Exception:
+                conn = None
             try:
                 reader, writer, leftover, _ = await bench._connect_one(
-                    node_host, node_port, target_host, target_port, jwt
+                    node_host, node_port, target_host, target_port, jwt, conn=conn
                 )
                 return reader, writer, leftover
             except Exception as e:
                 last_err = e
                 if "401" in str(e) or "403" in str(e):
                     self.pool.report_failure(gc)
+                # 预握手连接可能已被 Fastly 关闭：丢弃并现场重试一次
+                if conn is not None:
+                    try:
+                        conn[1].close()
+                    except Exception:
+                        pass
+                    try:
+                        reader, writer, leftover, _ = await bench._connect_one(
+                            node_host, node_port, target_host, target_port, jwt
+                        )
+                        return reader, writer, leftover
+                    except Exception as e2:
+                        last_err = e2
         raise ConnectionError(f"tunnel via {node_host} failed: {last_err!r}")
 
     async def ws_vless(self, req):
@@ -1299,23 +1375,18 @@ class Panel:
                 if nodes:
                     names = "".join(f"      - fxproxy-{c}-{n}\n"
                                     for c, n, _, _ in nodes)
-                    # 负载均衡组只放主力节点：34 个全塞进去会让 Clash 每轮
-                    # 健康检查并发建 34 条隧道（面板 2 核 CPU 上 3-4s），
-                    # 主力 10 个足够并行提速，全量节点仍可在列表里手选。
-                    HOT = ("US", "JP", "KR", "SG", "DE", "GB", "NL", "FR",
-                           "CA", "AU")
-                    lb_members = "".join(f"      - fxproxy-{c}-{n}\n"
-                                         for c, n, _, _ in nodes if c in HOT)
-                    if not lb_members:
-                        lb_members = names
+                    # 全量节点进负载均衡组；lazy: true 让 mihomo 不主动
+                    # 定期健康检查（否则 34 条隧道并发建连会压面板），
+                    # 只在真正使用时按需测速。
                     lb_group = (
                         "\n  - name: \"fxproxy-auto\"\n"
                         "    type: load-balance\n"
                         "    url: https://www.gstatic.com/generate_204\n"
                         "    interval: 300\n"
+                        "    lazy: true\n"
                         "    strategy: round-robin\n"
                         "    proxies:\n"
-                        + lb_members
+                        + names
                     )
                     new_group = "      - fxproxy-auto\n"
                 else:

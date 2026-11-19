@@ -106,13 +106,20 @@ class ProxyServer:
         self._ssl = ssl.create_default_context()
 
     # ---- upstream tunnel ---------------------------------------------
-    async def _connect_one(self, node_host, node_port, target_host, target_port, jwt):
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                node_host, node_port, ssl=self._ssl, server_hostname=node_host
-            ),
-            timeout=FASTLY_CONNECT_TIMEOUT,
-        )
+    async def _connect_one(self, node_host, node_port, target_host, target_port,
+                           jwt, conn=None):
+        """CONNECT through one node. ``conn`` may carry a pre-handshaked
+        (reader, writer) pair from a connection pool; TLS setup is skipped
+        then and only the CONNECT round-trip is paid."""
+        if conn is None:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    node_host, node_port, ssl=self._ssl, server_hostname=node_host
+                ),
+                timeout=FASTLY_CONNECT_TIMEOUT,
+            )
+        else:
+            reader, writer = conn
         target = f"{target_host}:{target_port}"
         req = (
             f"CONNECT {target} HTTP/1.1\r\n"
