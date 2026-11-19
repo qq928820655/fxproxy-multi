@@ -33,6 +33,10 @@ class NodePicker:
         # Pin to one concrete node hostname (overrides country fan-out).
         self.node = (node or "").strip() or None
         self._by_country: dict[str, dict] = {}
+        # Hostname of the most recently picked node; lets the panel show the
+        # actual egress country in "any country" mode. Set from worker threads,
+        # read from the asyncio thread — attribute assignment is atomic (GIL).
+        self.last_host: Optional[str] = None
 
     def refresh(self) -> None:
         self._by_country = self.client.nodes_by_country()
@@ -58,7 +62,17 @@ class NodePicker:
         return [n for v in self._by_country.values() for n in v["nodes"]]
 
     def pick(self) -> tuple[str, int]:
-        return random.choice(self._pool())
+        h, p = random.choice(self._pool())
+        self.last_host = h
+        return h, p
+
+    def country_of(self, host: str) -> str:
+        """Reverse-lookup the country code for a node hostname."""
+        for code, meta in (self._by_country or {}).items():
+            for h, _ in meta["nodes"]:
+                if h == host:
+                    return code
+        return ""
 
     def pick_many(self, n: int) -> list[tuple[str, int]]:
         """Return up to n distinct random nodes (for failover)."""
@@ -151,9 +165,12 @@ class ProxyServer:
             for node_host, node_port in nodes:
                 tried_nodes += 1
                 try:
-                    return await self._connect_one(
+                    conn = await self._connect_one(
                         node_host, node_port, target_host, target_port, jwt
                     )
+                    # 出口已确立：记录实际使用的节点，供面板显示国家
+                    self.picker.last_host = node_host
+                    return conn
                 except AccountAuthFailure as e:
                     # 账号级失败：冷却账号，不再试这个账号的其它节点
                     last_err = e

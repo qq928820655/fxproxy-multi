@@ -324,7 +324,11 @@ async function loadState(){
   $("socksAddr").textContent = shownHost+":"+s.socks_port;
   $("subUrl").textContent = location.origin + "/clash.yaml";
   CURRENT_NODE = s.node || "";
-  $("listen").textContent = s.running ? ("出口："+(s.node ? "固定节点 "+s.node : (s.country||"任意"))) : "";
+  let egress;
+  if (s.node) egress = "出口：固定节点 "+s.node+(s.egress_country?(" ("+s.egress_country+")"):"");
+  else if (s.egress_country) egress = "出口：任意 · 最近 "+s.egress_country;
+  else egress = s.running ? ("出口："+(s.country||"任意")) : "";
+  $("listen").textContent = s.running ? egress : "";
   $("strategy").value = s.strategy || "round-robin";
   $("acctCount").textContent = "("+(s.account_count||0)+" 个)";
   if(!userPicked && s.running && s.country){ $("country").value = s.country; updateNodeWarn(); }
@@ -479,6 +483,15 @@ class Panel:
     async def index(self, req):
         return web.Response(text=PAGE, content_type="text/html")
 
+    def _egress_country(self) -> str:
+        """Country of the node that last carried traffic ('' if none yet)."""
+        if self.srv is None:
+            return ""
+        host = getattr(self.srv.picker, "last_host", None)
+        if not host:
+            return ""
+        return self.srv.picker.country_of(host)
+
     async def api_state(self, req):
         running = self.srv is not None
         return web.json_response({
@@ -489,6 +502,7 @@ class Panel:
                          self.cfg.get("pool_strategy", "round-robin")),
             "country": (self.srv.picker.country if running else self.cfg.get("country") or ""),
             "node": (getattr(self.srv.picker, "node", None) or "" if running else ""),
+            "egress_country": (self._egress_country() if running else ""),
             "host": self.cfg.get("host", "127.0.0.1"),
             "http_port": self.cfg.get("http_port", 8080),
             "socks_port": self.cfg.get("socks_port", 1080),
