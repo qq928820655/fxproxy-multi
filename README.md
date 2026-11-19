@@ -84,10 +84,14 @@ Mozilla 对 `/account/login` 和 `/account/create` 按机房 IP 风控（406）�
 `chrome-extension/` 里有一个 Manifest V3 插件，在你**已登录**的 Chrome 里一键取出 FxA 凭证，
 复制到剪贴板，粘到面板即可。全程不发外部请求——只读页面自己的 localStorage/cookie。
 
-安装：
+安装（zip 包，方便迁移）：
 
-1. Chrome 打开 `chrome://extensions/`，开「开发者模式」
-2. 「加载已解压的扩展程序」→ 选本仓库的 `chrome-extension/` 目录
+1. 下载仓库根目录的 `fxproxy-chrome-extension.zip`（或自己打包：`cd chrome-extension && zip -r ../fxproxy-chrome-extension.zip .`）
+2. 解压到任意目录（zip 内四个文件在根目录，解压出来就是扩展目录）
+3. Chrome 打开 `chrome://extensions/`，开「开发者模式」
+4. 「加载已解压的扩展程序」→ 选解压出来的那个目录
+
+也可以直接用仓库里的 `chrome-extension/` 目录加载，效果一样。zip 只是方便拷到别的机器。
 
 用法：
 
