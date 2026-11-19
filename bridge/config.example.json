@@ -1,0 +1,26 @@
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [
+    {
+      "tag": "ws-in",
+      "listen": "127.0.0.1",
+      "port": 8081,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{"id": "PASTE-UUID-FROM-uuid.txt", "level": 0}],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {"path": "/vless"}
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "fxproxy-socks",
+      "protocol": "socks",
+      "settings": {"servers": [{"address": "127.0.0.1", "port": 1080}]}
+    }
+  ]
+}

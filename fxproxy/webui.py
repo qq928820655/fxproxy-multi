@@ -7,6 +7,7 @@ switch egress country, and watch aggregate quota — no command line needed.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import socket
 import time
@@ -143,9 +144,12 @@ PAGE = """<!doctype html>
     </div>
     <div class="nodescroll">
       <table>
-        <thead><tr><th>国家</th><th>节点主机</th><th>端口</th><th>延迟</th></tr></thead>
-        <tbody id="nodeBody"><tr><td colspan="4" class="muted">加载中…</td></tr></tbody>
+        <thead><tr><th>国家</th><th>节点主机</th><th>端口</th><th>延迟</th><th>带宽</th><th></th></tr></thead>
+        <tbody id="nodeBody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
       </table>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:6px;">
+      「设为出口」固定走该节点；「测速」经该节点下载 8MB 计带宽（约 3-20 秒）。
     </div>
   </div>
 
@@ -162,8 +166,8 @@ PAGE = """<!doctype html>
       <button id="refreshQuotaBtn" class="sm">刷新配额</button>
     </div>
     <table>
-      <thead><tr><th>#</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
-      <tbody id="acctBody"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+      <thead><tr><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
+      <tbody id="acctBody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
     </table>
     <div class="kv" style="margin-top:10px;"><span>总剩余</span><b id="totalRemain">—</b></div>
   </div>
@@ -254,23 +258,56 @@ async function loadNodes(probe){
   try{
     const r = await fetch("/api/nodes"+(probe?"?probe=1":""));
     const d = await r.json();
-    if(d.error){ body.innerHTML = '<tr><td colspan="4" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
-    const rows = (d.nodes||[]).map(n =>
-      `<tr><td>${n.name}</td><td>${n.host}</td><td>${n.port}</td>`+
-      `<td class="${latClass(n)}">${probe?latText(n):"—"}</td></tr>`);
-    body.innerHTML = rows.join("") || '<tr><td colspan="4" class="muted">无节点</td></tr>';
+    if(d.error){ body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
+    const rows = (d.nodes||[]).map(n => {
+      let lat = `<td class="${latClass(n)}">${probe?latText(n):"—"}</td>`;
+      const mb = n.mbps;
+      let bw = `<td id="bw-${n.host}" class="muted">—</td>`;
+      if(mb != null){
+        const cls = mb >= 15 ? '"pill on"' : (mb >= 5 ? '" style="color:#d29922' : '"pill off"');
+        bw = mb >= 5 ? `<td><span class=${cls} id="bw-${n.host}">${mb} Mbps</span></td>`
+                     : `<td><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
+      }
+      const cur = (n.host === CURRENT_NODE);
+      return `<tr${cur?' style="background:#123329;"':''}><td>${n.name}${cur?' <span class="pill on">当前</span>':''}</td><td>${n.host}</td><td>${n.port}</td>${lat}${bw}`+
+        `<td><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
+        `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button></td></tr>`;
+    });
+    body.innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无节点</td></tr>';
     $("nodeCount").textContent = "("+(d.nodes||[]).length+" 个)";
     if(probe){
       const ok = (d.nodes||[]).filter(n=>n.ok).length;
       $("probeMsg").textContent = "可达 "+ok+"/"+(d.nodes||[]).length;
     }
   }catch(e){
-    body.innerHTML = '<tr><td colspan="4" class="muted">加载失败：'+e+'</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+e+'</td></tr>';
   }finally{
     if(probe){ btn.disabled = false; btn.textContent = "测试全部节点延迟"; }
   }
 }
 $("probeBtn").onclick = () => loadNodes(true);
+let CURRENT_NODE = "";
+async function useNode(host){
+  $("probeMsg").textContent = "切换出口到 "+host+" …";
+  const r = await fetch("/api/start",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({node:host})});
+  const d = await r.json();
+  $("probeMsg").textContent = d.error ? ("失败："+d.error) : ("出口已固定到 "+host);
+  userPicked = false; await loadState(); await loadNodes(false);
+}
+async function testNode(host){
+  const btn = $("st-"+host); const bw = $("bw-"+host);
+  btn.disabled = true; bw.className="muted"; bw.style.color=""; bw.textContent="测速中…";
+  const r = await fetch("/api/speedtest",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({node:host})});
+  const d = await r.json(); btn.disabled = false;
+  if(d.error){ bw.className="pill off"; bw.textContent = "失败"; $("probeMsg").textContent = d.error; }
+  else {
+    const cls = d.mbps>=15 ? "pill on" : (d.mbps>=5 ? "" : "pill off");
+    bw.className = cls; bw.style.color = d.mbps>=15||d.mbps<5 ? "" : "#d29922";
+    bw.textContent = d.mbps+" Mbps";
+  }
+}
 
 let AUTHED = false, userPicked = false;
 async function loadState(){
@@ -286,7 +323,8 @@ async function loadState(){
   $("httpAddr").textContent = shownHost+":"+s.http_port;
   $("socksAddr").textContent = shownHost+":"+s.socks_port;
   $("subUrl").textContent = location.origin + "/clash.yaml";
-  $("listen").textContent = s.running ? ("出口："+(s.country||"任意")) : "";
+  CURRENT_NODE = s.node || "";
+  $("listen").textContent = s.running ? ("出口："+(s.node ? "固定节点 "+s.node : (s.country||"任意"))) : "";
   $("strategy").value = s.strategy || "round-robin";
   $("acctCount").textContent = "("+(s.account_count||0)+" 个)";
   if(!userPicked && s.running && s.country){ $("country").value = s.country; updateNodeWarn(); }
@@ -311,17 +349,17 @@ async function loadAccounts(){
       } else if(a.max_bytes){
         rem = "月度 "+fmt(a.max_bytes)+" · 用量待取";
       } else { rem = (a.error||"—").slice(0,32); }
-      return `<tr><td>#${i+1}</td><td>${a.uid||"—"}</td><td>${st}</td>
+      return `<tr><td>#${i+1}</td><td style="font-size:12px;">${a.email||'<span class="muted">—</span>'}</td><td>${a.uid||"—"}</td><td>${st}</td>
         <td>${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
         <td><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
     });
-    $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="5" class="muted">无账号</td></tr>';
+    $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无账号</td></tr>';
     const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
     $("totalRemain").textContent = d.unlimited ? "不限量"
       : ((d.total_used_bytes!=null && d.total_max_bytes!=null)
          ? "已用 "+fmt(d.total_used_bytes)+" / "+fmt(d.total_max_bytes)
          : (remTxt || (d.total_max_bytes!=null ? "月度 "+fmt(d.total_max_bytes)+" · 用量待取" : "部分未知")));
-  }catch(e){ $("acctBody").innerHTML = '<tr><td colspan="5" class="muted">加载失败</td></tr>'; }
+  }catch(e){ $("acctBody").innerHTML = '<tr><td colspan="6" class="muted">加载失败</td></tr>'; }
 }
 $("loginMode").onchange = () => {
   const m = $("loginMode").value;
@@ -416,6 +454,8 @@ class Panel:
         self.cfg = cfgmod.load(config_path)
         self.pool = self._make_pool()
         self.srv = None
+        self._st_srv = None
+        self._st_lock = asyncio.Lock()
 
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
@@ -448,6 +488,7 @@ class Panel:
             "strategy": (self.pool.strategy if self.pool else
                          self.cfg.get("pool_strategy", "round-robin")),
             "country": (self.srv.picker.country if running else self.cfg.get("country") or ""),
+            "node": (getattr(self.srv.picker, "node", None) or "" if running else ""),
             "host": self.cfg.get("host", "127.0.0.1"),
             "http_port": self.cfg.get("http_port", 8080),
             "socks_port": self.cfg.get("socks_port", 1080),
@@ -464,6 +505,7 @@ class Panel:
         for i, (c, q) in enumerate(zip(self.pool.clients, snaps)):
             row = dict(q)
             row["cooling"] = self.pool._cool_until.get(i, 0) > now
+            row["email"] = c.email() if q.get("ok") else None
             rows.append(row)
         return rows
 
@@ -603,20 +645,31 @@ class Panel:
         except Exception:
             body = {}
         country = (body.get("country") or "").upper() or None
+        node = (body.get("node") or "").strip() or None
         if self.srv is not None:
-            if self.srv.picker.country == country:
+            cur_node = getattr(self.srv.picker, "node", None)
+            if node is None and cur_node is None and self.srv.picker.country == country:
                 return web.json_response({"ok": True, "already": True})
+            if node is None:
+                # country-level switch reuses the running server
+                try:
+                    self.srv.picker.node = None
+                    await self.srv.switch_country(country)
+                    return web.json_response({"ok": True, "switched": True})
+                except Exception as e:
+                    return web.json_response({"error": str(e)})
+            # node-level selection needs a dedicated picker: restart
             try:
-                await self.srv.switch_country(country)
-                return web.json_response({"ok": True, "switched": True})
-            except Exception as e:
-                return web.json_response({"error": str(e)})
+                await self.srv.stop()
+            except Exception:
+                pass
+            self.srv = None
         if self.pool is None or not self.pool.tokens:
             # 空池非 None（历史配置 refresh_tokens=[] 或异常路径）时 clients[0]
             # 会裸抛 IndexError；这里一并挡掉。
             return web.json_response({"error": "无账号，先添加"})
         try:
-            picker = NodePicker(self.pool.clients[0], country)
+            picker = NodePicker(self.pool.clients[0], country, node)
             srv = ProxyServer(
                 self.pool, picker,
                 host=self.cfg.get("host", "127.0.0.1"),
@@ -626,9 +679,62 @@ class Panel:
             )
             await srv.start()
             self.srv = srv
-            return web.json_response({"ok": True, "account_count": len(self.pool.clients)})
+            return web.json_response({"ok": True, "account_count": len(self.pool.clients),
+                                      "node": node or ""})
         except Exception as e:
             return web.json_response({"error": str(e)})
+
+    async def api_speedtest(self, req):
+        """Download benchmark pinned to one node via a temporary proxy
+        instance on ports 8095/8096; reports megabits per second."""
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        node = (body.get("node") or "").strip() or None
+        if self.pool is None or not self.pool.tokens:
+            return web.json_response({"error": "无账号，先添加"})
+        async with self._st_lock:
+            if self._st_srv is not None:
+                return web.json_response({"error": "已有测速在进行"})
+            srv = None
+            try:
+                picker = NodePicker(self.pool.clients[0], None, node)
+                srv = ProxyServer(
+                    self.pool, picker,
+                    host="127.0.0.1", http_port=8095, socks_port=8096,
+                    failover=1,
+                )
+                await srv.start()
+                self._st_srv = srv
+
+                def _bench():
+                    import requests as _rq
+                    t0 = time.monotonic()
+                    got = 0
+                    with _rq.get(
+                        "https://speed.cloudflare.com/__down?bytes=8000000",
+                        proxies={"http": "http://127.0.0.1:8095",
+                                 "https": "http://127.0.0.1:8095"},
+                        stream=True, timeout=(5, 25),
+                    ) as r:
+                        r.raise_for_status()
+                        for chunk in r.iter_content(65536):
+                            got += len(chunk)
+                    dt = time.monotonic() - t0
+                    return {"bytes": got, "seconds": round(dt, 2),
+                            "mbps": round(got * 8 / dt / 1e6, 1)}
+                res = await asyncio.to_thread(_bench)
+                return web.json_response({"ok": True, **res})
+            except Exception as e:
+                return web.json_response({"error": str(e)})
+            finally:
+                if srv is not None:
+                    try:
+                        await srv.stop()
+                    except Exception:
+                        pass
+                self._st_srv = None
 
     async def api_stop(self, req):
         if self.srv is not None:
@@ -769,6 +875,90 @@ class Panel:
         except Exception as e:
             return web.json_response({"error": str(e)})
 
+    def _bridge_uuid(self) -> str:
+        """VLESS uuid of the local xray bridge, empty if not deployed."""
+        try:
+            from pathlib import Path
+            p = Path(__file__).resolve().parent.parent / "bridge" / "uuid.txt"
+            return p.read_text().strip() if p.exists() else ""
+        except Exception:
+            return ""
+
+    def _bridge_host(self, req) -> str:
+        host = req.host.split(":", 1)[0]
+        if host in ("0.0.0.0", "::", "*"):
+            host = "127.0.0.1"
+        return self.cfg.get("sub_server") or host
+
+    def _bridge_available(self, host: str) -> bool:
+        return bool(self._bridge_uuid()) and host != "127.0.0.1"
+
+    async def ws_echo(self, req):
+        """Diagnostic: verifies WebSocket pass-through on this deployment."""
+        ws = web.WebSocketResponse()
+        await ws.prepare(req)
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                await ws.send_str("echo:" + msg.data)
+            elif msg.type == web.WSMsgType.ERROR:
+                break
+        return ws
+
+    async def ws_bridge(self, req):
+        """Reverse-proxy a WebSocket stream to the local xray bridge.
+
+        Lets external clients reach the proxy through the panel's single
+        exposed HTTP port: client --wss/gateway--> panel /vless --> xray
+        (127.0.0.1:8081) --> fxproxy SOCKS5 --> Mozilla egress.
+        """
+        import aiohttp as _aio
+        downstream = web.WebSocketResponse(autoping=True)
+        await downstream.prepare(req)
+        upstream_url = "ws://127.0.0.1:8081/vless"
+        try:
+            async with _aio.ClientSession() as session:
+                async with session.ws_connect(
+                    upstream_url, autoping=True, heartbeat=None
+                ) as upstream:
+
+                    async def _d2u():
+                        async for msg in downstream:
+                            if msg.type == web.WSMsgType.BINARY:
+                                await upstream.send_bytes(msg.data)
+                            elif msg.type == web.WSMsgType.TEXT:
+                                await upstream.send_str(msg.data)
+                            else:
+                                break
+
+                    async def _u2d():
+                        async for msg in upstream:
+                            if msg.type == _aio.WSMsgType.BINARY:
+                                await downstream.send_bytes(msg.data)
+                            elif msg.type == _aio.WSMsgType.TEXT:
+                                await downstream.send_str(msg.data)
+                            else:
+                                break
+
+                    await asyncio.gather(_d2u(), _u2d())
+        except Exception:
+            pass
+        return downstream
+
+    async def api_sub(self, req):
+        """vless:// share link (base64 wrapped) for v2rayN / sing-box."""
+        server = self._bridge_host(req)
+        if not self._bridge_available(server):
+            return web.json_response({"error": "vless bridge not deployed"})
+        link = (f"vless://{self._bridge_uuid()}@{server}:443"
+                f"?encryption=none&security=tls&sni={server}"
+                f"&type=ws&host={server}&path=%2Fvless#fxproxy-bridge")
+        b64 = base64.b64encode((link + "\n").encode()).decode()
+        return web.Response(
+            text=b64,
+            content_type="text/plain",
+            headers={"Content-Disposition": 'attachment; filename="fxproxy-sub.txt"'},
+        )
+
     async def api_clash(self, req):
         """Clash/Mihomo subscription served at /clash.yaml.
 
@@ -787,6 +977,27 @@ class Panel:
             http_port=self.cfg.get("sub_http_port") or self.cfg.get("http_port", 8080),
             socks_port=self.cfg.get("sub_socks_port") or self.cfg.get("socks_port", 1080),
         )
+        if self._bridge_available(server):
+            vless_node = (
+                "  - name: \"fxproxy-vless-ws\"\n"
+                "    type: vless\n"
+                f"    server: {server}\n"
+                "    port: 443\n"
+                f"    uuid: {self._bridge_uuid()}\n"
+                "    tls: true\n"
+                f"    servername: {server}\n"
+                "    network: ws\n"
+                "    ws-opts:\n"
+                "      path: /vless\n"
+                "    udp: false\n"
+            )
+            marker = "proxy-groups:"
+            if marker in text:
+                head, tail = text.split(marker, 1)
+                text = (head.rstrip("\n") + "\n" + vless_node + "\n"
+                        + marker + tail.replace(
+                            '      - "fxproxy-http"\n',
+                            '      - fxproxy-vless-ws\n      - "fxproxy-http"\n', 1))
         return web.Response(
             text=text,
             content_type="text/yaml",
@@ -844,6 +1055,10 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/strategy", panel.api_strategy),
         web.get("/api/servers", panel.api_servers),
         web.get("/api/nodes", panel.api_nodes),
+        web.post("/api/speedtest", panel.api_speedtest),
+        web.get("/ws-echo", panel.ws_echo),
+        web.get("/vless", panel.ws_bridge),
+        web.get("/sub", panel.api_sub),
         web.post("/api/start", panel.api_start),
         web.post("/api/stop", panel.api_stop),
         web.post("/api/login", panel.api_login),

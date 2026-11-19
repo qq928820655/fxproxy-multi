@@ -122,6 +122,23 @@ class GuardianClient:
         return {"Authorization": "Bearer " + self.access_token}
 
     # ---- account status / quota --------------------------------------
+    def email(self) -> Optional[str]:
+        """Account email via the FxA profile API (cached per client)."""
+        if getattr(self, "_email", None):
+            return self._email
+        try:
+            r = self._s.get(
+                "https://profile.accounts.firefox.com/v1/profile",
+                headers=self._auth_header(),
+                timeout=20,
+            )
+            if r.status_code == 200:
+                self._email = r.json().get("email")
+                return self._email
+        except Exception:
+            pass
+        return None
+
     def status(self) -> dict:
         r = self._s.get(
             GUARDIAN_BASE + "/api/v1/fpn/status",
@@ -160,9 +177,11 @@ class GuardianClient:
         limit = q.get("limit") or max_bytes
         remaining = q.get("remaining")
         used = (limit - remaining) if (limit and remaining is not None) else None
-        # 真实额度判定：status 明确限量 → 有限；只有 status 说不限量且 header
-        # 也确认 unlimited 时才算无限。避免把 50GB 账号误显示成"无限"。
-        unlimited = (not limited) and bool(q.get("unlimited", False))
+        # 真实额度判定：status 明确限量 → 有限；maxBytes 有值 → 有限。
+        # x-quota-unlimited 头不可靠：50GB 免费档账号也返回 true（还带
+        # remaining/reset 周期），只有在 status 不限量且 maxBytes 缺失时
+        # 才认"无限"。避免把 50GB 账号误显示成"无限"。
+        unlimited = (not limited) and bool(q.get("unlimited", False)) and not max_bytes
         return {
             "uid": s.get("uid"),
             "max_bytes": limit,

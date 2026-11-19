@@ -26,9 +26,12 @@ class AccountAuthFailure(ConnectionError):
 class NodePicker:
     """Chooses a Fastly node for a country preference."""
 
-    def __init__(self, client: GuardianClient, country: Optional[str] = None):
+    def __init__(self, client: GuardianClient, country: Optional[str] = None,
+                 node: Optional[str] = None):
         self.client = client
         self.country = (country or "").upper() or None
+        # Pin to one concrete node hostname (overrides country fan-out).
+        self.node = (node or "").strip() or None
         self._by_country: dict[str, dict] = {}
 
     def refresh(self) -> None:
@@ -44,6 +47,12 @@ class NodePicker:
     def _pool(self) -> list[tuple[str, int]]:
         if not self._by_country:
             self.refresh()
+        if self.node:
+            for v in self._by_country.values():
+                for h, p in v["nodes"]:
+                    if h == self.node:
+                        return [(h, p)]
+            raise RuntimeError(f"node {self.node!r} not in server list")
         if self.country:
             return list(self._by_country[self.country]["nodes"])
         return [n for v in self._by_country.values() for n in v["nodes"]]
