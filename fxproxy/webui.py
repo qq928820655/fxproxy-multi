@@ -177,14 +177,25 @@ PAGE = """<!doctype html>
     <div class="muted">在浏览器/系统里把代理设为：</div>
     <div style="margin-top:6px;">HTTP：<code id="httpAddr">127.0.0.1:8080</code>　
         SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></div>
+    <div class="muted" style="font-size:12px;margin-top:4px;">
+      两个是同一后端的两个入口，任选其一：浏览器 / 系统代理 / 指纹浏览器填 <b>HTTP 8080</b>；
+      只认 SOCKS5 的客户端（Telegram、部分爬虫库、<code>curl --socks5</code>）填 <b>SOCKS5 1080</b>。
+    </div>
     <div class="row" style="margin-top:10px;">
       <label>Clash / Mihomo 订阅</label>
       <code id="subUrl" style="flex:1;word-break:break-all;">—</code>
       <button id="copySubBtn" class="sm">复制地址</button>
     </div>
+    <div class="row" style="margin-top:8px;">
+      <label>mihomo provider</label>
+      <code id="provUrl" style="flex:1;word-break:break-all;">—</code>
+      <button id="copyProvBtn" class="sm">复制地址</button>
+    </div>
     <div class="muted" style="font-size:12px;margin-top:4px;">
-      把上面的 URL 填进 Clash/Mihomo 的「订阅链接」导入。异机导入需让面板监听 0.0.0.0
-      并配置 <code>sub_server</code> 为本机可达 IP，否则订阅里的 127.0.0.1 指向客户端自己。
+      上面的 URL 填进 Clash/Mihomo 的「订阅链接」导入。异机导入需让面板监听 0.0.0.0
+      并配置 <code>sub_server</code> 为本机可达 IP，否则订阅里的 127.0.0.1 指向客户端自己。<br>
+      不想让 mihomo 覆盖你自己的 <code>port</code>/<code>rules</code>，就把 provider 那个地址填进
+      <code>proxy-providers</code> 的 <code>url</code>，它只返回 <code>proxies</code> 段。
     </div>
     <div class="row" style="margin-top:14px;">
       <button id="copyCfgBtn">复制配置（config.json）</button>
@@ -334,6 +345,7 @@ async function loadState(){
   $("httpAddr").textContent = shownHost+":"+s.http_port;
   $("socksAddr").textContent = shownHost+":"+s.socks_port;
   $("subUrl").textContent = location.origin + "/clash.yaml";
+  $("provUrl").textContent = location.origin + "/clash.yaml?provider=1";
   CURRENT_NODE = s.node || "";
   let egress;
   if (s.node) egress = "出口：固定节点 "+s.node+(s.egress_country?(" ("+s.egress_country+")"):"");
@@ -450,6 +462,11 @@ $("copySubBtn").onclick = async () => {
   const u = $("subUrl").textContent;
   try { await navigator.clipboard.writeText(u); $("copyMsg").textContent = "订阅地址已复制✓"; }
   catch(e) { $("copyMsg").textContent = "订阅地址：" + u; }
+};
+$("copyProvBtn").onclick = async () => {
+  const u = $("provUrl").textContent;
+  try { await navigator.clipboard.writeText(u); $("copyMsg").textContent = "provider 地址已复制✓"; }
+  catch(e) { $("copyMsg").textContent = "provider 地址：" + u; }
 };
 $("testBtn").onclick = async () => {
   $("egress").textContent="测试中…";
@@ -1310,11 +1327,30 @@ class Panel:
                         + marker + lb_group
                         + tail.replace('      - "fxproxy-http"\n',
                                        new_group, 1))
+
+        # ?provider=1：只留 proxies 段，给 mihomo 当 proxy-provider 用。
+        # 完整配置（含 port/mode/rules）塞进 provider 会把客户端的端口和规则顶掉，
+        # 所以这里切出 proxies 块，其它字段一律不带。
+        if req.query.get("provider") in ("1", "true", "yes"):
+            lines = text.splitlines()
+            out, keep = [], False
+            for line in lines:
+                if line.rstrip() == "proxies:":
+                    keep = True
+                elif keep and line and not line[0].isspace():
+                    break          # 到了 proxy-groups: 之类的顶层键，停
+                if keep:
+                    out.append(line)
+            text = "\n".join(out) + "\n"
+            fname = "fxproxy-provider.yaml"
+        else:
+            fname = "fxproxy.yaml"
+
         return web.Response(
             text=text,
             content_type="text/yaml",
             charset="utf-8",
-            headers={"Content-Disposition": 'attachment; filename="fxproxy.yaml"'},
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 
     async def api_config(self, req):

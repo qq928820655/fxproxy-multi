@@ -14,6 +14,8 @@
   `fxproxy login --cookie / --cookie-file` 直接吃插件导出内容。
 - **订阅**：`GET /clash.yaml` 与 `fxproxy export-clash`，生成 Clash / Mihomo 配置；
   公网部署用 `FXPROXY_SUB_SERVER` / `FXPROXY_SUB_HTTP_PORT` / `FXPROXY_SUB_SOCKS_PORT` 覆盖。
+  `?provider=1` 只返回 `proxies:` 段，可直接挂进 mihomo 的 `proxy-providers`，
+  不会覆盖客户端自己的 `port` / `mode` / `rules`；面板上两个地址分开给、分开复制。
 - **节点延迟探测**：`GET /api/nodes` 返回全部节点（中文国名 + 洲域 + 主机 + 端口），
   `?probe=1` 用 `ThreadPoolExecutor(max_workers=16)` + 4s TCP connect 并发探测，附 `latency_ms` / `ok`。
 - **节点固定与测速**：per-node pinning（面板里锁死某个节点）+ 速度测试；账号表增加邮箱列。
@@ -57,7 +59,7 @@
 
 ### 测试
 
-`test_pool`(37) / `test_cookieutil`(8) / `test_webapi`(55) / `test_cli`(24) /
+`test_pool`(37) / `test_cookieutil`(8) / `test_webapi`(68) / `test_cli`(24) /
 `test_geo`(7) / `test_crx`(14) / `test_zip`(20) / `test_windows_deploy`(44) /
 `test_chrome_formats.js`(9)
 

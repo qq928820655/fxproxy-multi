@@ -264,6 +264,45 @@ fxproxy web                                # 打开控制面板
 订阅内容只有两个节点：`fxproxy-http`（HTTP，8080）和 `fxproxy-socks5`（SOCKS5，1080），
 策略组 `PROXY` 可选节点或 DIRECT，最后一条 `MATCH,PROXY` 全走代理。
 
+#### 接 mihomo 的两种姿势
+
+**姿势一：整份当配置跑**（最省事，但会接管端口）
+
+```bash
+curl -o fxproxy.yaml http://127.0.0.1:8765/clash.yaml
+mihomo -f fxproxy.yaml
+```
+
+这份 YAML 自带 `port: 7890` / `socks-port: 7891` / `mode: rule`，等于让 mihomo 起在
+7890/7891。如果你已经有自己的 mihomo 配置，别覆盖——用姿势二。
+
+**姿势二：当 proxy-provider 挂进现有配置**（推荐）
+
+完整配置里那些 `port` / `mode` / `rules` 塞进 provider 会把客户端设置顶掉，所以加 `?provider=1`
+只要 `proxies` 段：
+
+```yaml
+# 你的 config.yaml
+proxy-providers:
+  fxproxy:
+    type: http
+    url: "http://127.0.0.1:8765/clash.yaml?provider=1"
+    interval: 3600
+    path: ./providers/fxproxy.yaml
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    use: [fxproxy]        # 拉 provider 里的两个节点
+    proxies: [DIRECT]
+
+rules:
+  - MATCH,PROXY
+```
+
+`?provider=1` 返回的文件只有一个顶层键 `proxies:`，可以直接被 `use:` 引用；
+也可以 `curl -o providers/fxproxy.yaml "…/clash.yaml?provider=1"` 后改用 `type: file`。
+
 异机/手机导入要注意：订阅里的 server 默认是 `127.0.0.1`，那指向客户端自己，连不上。两种解法：
 
 1. 面板监听 `0.0.0.0`（`fxproxy web --web-host 0.0.0.0`）后用该机器的局域网 IP 访问面板，`/clash.yaml` 会自动把 server 填成访问用的 IP；

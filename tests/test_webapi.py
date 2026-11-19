@@ -214,6 +214,9 @@ async def main():
             check("调度策略" in html and "账号池" in html, "面板含多账号 UI")
             check("cookieData" in html and "Cookie / 插件导出" in html, "面板含 cookie 导入 UI")
             check("subUrl" in html and "/clash.yaml" in html, "面板含订阅地址 UI")
+            check("provUrl" in html and "provider=1" in html,
+                  "面板含 mihomo provider 地址 UI")
+            check("copyProvBtn" in html, "面板含 provider 复制按钮")
 
             print("[api] clash.yaml 订阅")
             r = await cli.get("/clash.yaml")
@@ -222,6 +225,21 @@ async def main():
             check("type: http" in y and "type: socks5" in y, "订阅含 HTTP+SOCKS5 节点")
             check("127.0.0.1" in y and "port: 8080" in y, "订阅节点指向本地代理端口")
             check(r.headers.get("Content-Type", "").startswith("text/yaml"), "订阅 Content-Type 正确")
+
+            print("[api] clash.yaml?provider=1 —— mihomo proxy-provider 形态")
+            rp = await cli.get("/clash.yaml?provider=1")
+            yp = await rp.text()
+            check(rp.status == 200 and yp.startswith("proxies:"), "provider 以 proxies: 开头")
+            only_proxies = [ln for ln in yp.splitlines() if ln and not ln[0].isspace()]
+            check(only_proxies == ["proxies:"],
+                  f"provider 只有 proxies 一个顶层键，实得 {only_proxies}")
+            # 完整配置里的这些字段会把客户端设置顶掉，provider 里绝不能出现
+            for bad in ("port: 7890", "socks-port:", "mode: rule", "proxy-groups:",
+                        "rules:", "log-level:", "allow-lan:"):
+                check(bad not in yp, f"provider 不含 {bad!r}")
+            check("type: http" in yp and "type: socks5" in yp, "provider 仍含两个节点")
+            check("fxproxy-provider.yaml" in rp.headers.get("Content-Disposition", ""),
+                  "provider 下载文件名区分")
 
         # 容器部署：env 注入公网入口后，订阅必须指向公网地址与映射端口。
         print("[api] clash.yaml 走 env 公网入口")
