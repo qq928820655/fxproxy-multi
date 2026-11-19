@@ -3,70 +3,89 @@
 var msg = document.getElementById("msg");
 var out = document.getElementById("out");
 var btn = document.getElementById("extract");
+var dlBtn = document.getElementById("download");
+var fmtSel = document.getElementById("format");
+var lastPayload = null;
 
 function say(text, cls) {
   msg.textContent = text;
   msg.className = cls || "";
 }
 
+// Re-render the textbox when the chosen format changes (no need to re-extract).
+fmtSel.addEventListener("change", function () {
+  if (lastPayload) out.value = FxproxyFormats.format(lastPayload, fmtSel.value);
+});
+
+async function grab() {
+  var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  var tab = tabs[0];
+  if (!tab || !/^https:\/\/accounts\.firefox\.com(\.cn)?\//.test(tab.url || "")) {
+    throw new Error("请先打开并登录 accounts.firefox.com 再点提取");
+  }
+  var results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: function () {
+      return (window.__fxproxyExtract || function () {
+        return window.__fxproxyLastPayload || { version: 1, error: "extractor not ready" };
+      })();
+    }
+  });
+  var payload = results && results[0] && results[0].result;
+  if (!payload || payload.error) throw new Error((payload && payload.error) || "未知错误");
+  if (!FxproxyFormats.tokensOf(payload).length) {
+    throw new Error("没抓到凭证。确认已登录，然后刷新页面再试一次。");
+  }
+  return payload;
+}
+
+function render(payload) {
+  lastPayload = payload;
+  out.value = FxproxyFormats.format(payload, fmtSel.value);
+}
+
 btn.addEventListener("click", async function () {
-  btn.disabled = true;
+  btn.disabled = true; dlBtn.disabled = true;
   say("读取中 …");
   try {
-    var tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    var tab = tabs[0];
-    if (!tab || !/^https:\/\/accounts\.firefox\.com(\.cn)?\//.test(tab.url || "")) {
-      say("请先打开并登录 accounts.firefox.com 再点提取", "err");
-      btn.disabled = false;
-      return;
-    }
-
-    var results;
-    try {
-      // Prefer the live extractor (handles sign-in after page load).
-      results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: function () {
-          return (window.__fxproxyExtract || function () {
-            return window.__fxproxyLastPayload || { version: 1, error: "extractor not ready" };
-          })();
-        }
-      });
-    } catch (injectErr) {
-      say("无法注入页面（刷新账号页后重试）: " + injectErr.message, "err");
-      btn.disabled = false;
-      return;
-    }
-
-    var payload = results && results[0] && results[0].result;
-    if (!payload || payload.error) {
-      say("提取失败: " + ((payload && payload.error) || "未知错误"), "err");
-      btn.disabled = false;
-      return;
-    }
-
-    var nTok = (payload.session_tokens || []).length;
+    var payload = await grab();
+    render(payload);
+    var nTok = FxproxyFormats.tokensOf(payload).length;
     var nAcct = (payload.accounts || []).length;
-    if (!nTok) {
-      say("没抓到凭证。确认已登录，然后刷新页面再试一次。", "err");
-      btn.disabled = false;
-      return;
-    }
-
-    var text = JSON.stringify(payload, null, 2);
-    out.value = text;
     try {
-      await navigator.clipboard.writeText(text);
-      say("已复制 " + nTok + " 个 token（" + nAcct + " 个账号），去面板粘贴", "ok");
-    } catch (clipErr) {
-      // clipboardWrite permission should cover this; fall back to select-all
-      out.focus();
-      out.select();
+      await navigator.clipboard.writeText(out.value);
+      say("已复制 " + nTok + " 个 token（" + nAcct + " 个账号），格式：" + fmtSel.selectedOptions[0].text, "ok");
+    } catch (e) {
+      out.focus(); out.select();
       say("已提取，但自动复制失败——请手动全选文本框内容复制", "err");
     }
   } catch (e) {
-    say("出错: " + e.message, "err");
+    say(e.message || String(e), "err");
   } finally {
-    btn.disabled = false;
+    btn.disabled = false; dlBtn.disabled = false;
+  }
+});
+
+dlBtn.addEventListener("click", async function () {
+  btn.disabled = true; dlBtn.disabled = true;
+  say("读取中 …");
+  try {
+    var payload = lastPayload || await grab();
+    render(payload);
+    var f = FxproxyFormats.FORMATS[fmtSel.value] || FxproxyFormats.FORMATS.json;
+    var blob = new Blob([out.value], { type: "text/plain;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "fxproxy-credentials." + f.ext;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    say("已下载 " + a.download + "，可用 `fxproxy login --cookie-file` 导入", "ok");
+  } catch (e) {
+    say(e.message || String(e), "err");
+  } finally {
+    btn.disabled = false; dlBtn.disabled = false;
   }
 });

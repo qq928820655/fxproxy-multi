@@ -100,7 +100,20 @@ Mozilla 对 `/account/login` 和 `/account/create` 按机房 IP 风控（406）�
 3. 到 fxproxy 面板的「添加账号」，方式选 **Cookie / 插件导出**，粘贴 → 添加
 
 抓的是 `__fxa_storage.accounts` 里每个账号的 `sessionToken`（新版 `fxs_` Bearer token 会自动解码成 hex），
-再做一次 localStorage/sessionStorage/cookie 全量扫描兜底 key 改名。插件导出 JSON：
+再做一次 localStorage/sessionStorage/cookie 全量扫描兜底 key 改名。
+
+**六种导出格式**（插件弹窗的下拉框切换，选完点「提取并复制」或「下载为文件」；切换格式会实时重渲染，不用重新提取）：
+
+| 格式 | 内容 | 用途 |
+|------|------|------|
+| `json`（默认） | 含 uid/email/sessionToken 的结构化 JSON | 面板粘贴，便于核对账号 |
+| `lines` | 每行一个 sessionToken | 面板粘贴 / 文本处理 |
+| `cookie` | `sessionToken=<hex>; ...` Cookie 头 | 面板 Cookie 框直接粘 |
+| `netscape` | Netscape cookies.txt（tab 分隔） | 浏览器/curl 通用格式 |
+| `csv` | 逗号分隔的一行 token | 脚本 / 环境变量 |
+| `accounts` | `邮箱 token` 每行一个 | 人工核对哪个 token 属于谁 |
+
+六种都能被面板的 cookie 模式直接导入，多账号一次入池（重复自动跳过）。JSON 示例：
 
 ```json
 {
@@ -111,18 +124,13 @@ Mozilla 对 `/account/login` 和 `/account/create` 按机房 IP 风控（406）�
 }
 ```
 
-面板的 cookie 模式兼容四种输入，可一次导入多个账号（重复自动跳过）：
-
-- 上面这个插件 JSON
-- `sessionToken=<hex>; ...` 形式的 Cookie 头 / Netscape cookie 文件行
-- 纯 `refresh_token`（hex），直接验证入池，不走 bootstrap
-- 多个 token（逗号/空格/换行分隔）
+面板的 cookie 模式另外也吃纯 `refresh_token`（hex，直接验证入池不走 bootstrap）。
 
 命令行等价：
 
 ```bash
 fxproxy login --cookie '{"session_tokens":["<64hex>"]}'   # 直接贴
-fxproxy login --cookie-file exported.json                 # 从文件读（插件导出的 JSON 内容）
+fxproxy login --cookie-file exported.json                 # 插件「下载为文件」的产物，六种格式都能读
 ```
 
 拿到的是 `refresh_token`，它不受 IP 风控，可以搬到机房服务器用——住宅 IP 只需做这一次提取。
@@ -430,4 +438,5 @@ journalctl -u fxproxy@$USER -f
 | `fxproxy/clashconf.py`   | 生成 Clash/Mihomo 订阅 YAML（指向本地 HTTP/SOCKS5 监听） |
 | `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口、cookie 导入 |
 | `fxproxy/cli.py`         | 命令行入口（login / accounts / status / token / servers / run / web） |
-| `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken |
+| `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken，六种格式导出 |
+| `chrome-extension/formats.js` | 六种导出格式（JSON/lines/cookie/netscape/csv/accounts）的纯函数实现 |

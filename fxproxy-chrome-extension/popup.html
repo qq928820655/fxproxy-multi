@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>fxproxy Token Extractor</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; width: 340px; margin: 0; padding: 16px; color: #222; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { font-size: 12px; color: #666; margin-bottom: 12px; }
+  button { width: 100%; padding: 9px; font-size: 13px; border: 0; border-radius: 6px;
+           background: #0060df; color: #fff; cursor: pointer; }
+  button:disabled { background: #aaa; cursor: default; }
+  textarea { width: 100%; height: 120px; box-sizing: border-box; margin-top: 10px;
+             font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+  #msg { font-size: 12px; min-height: 16px; margin-top: 8px; }
+  .ok { color: #0a7d28; } .err { color: #c00; }
+  ol { padding-left: 18px; font-size: 12px; color: #444; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <h1>fxproxy Token Extractor</h1>
+  <div class="sub">在已登录的 Firefox 账号页一键提取凭证</div>
+
+  <ol>
+    <li>在住宅 IP 的 Chrome 打开 <b>accounts.firefox.com</b> 并登录</li>
+    <li>点下方按钮，凭证自动复制到剪贴板</li>
+    <li>到 fxproxy 面板选「Cookie / 插件导出」粘贴</li>
+  </ol>
+
+  <button id="extract">提取并复制凭证</button>
+  <div id="msg"></div>
+  <textarea id="out" readonly placeholder="提取结果会显示在这里，并已复制到剪贴板"></textarea>
+
+  <script src="popup.js"></script>
+</body>
+</html>

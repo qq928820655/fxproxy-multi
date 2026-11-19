@@ -85,11 +85,34 @@ def test_empty():
         check(False, "empty input: raises ValueError")
 
 
+def test_all_plugin_formats():
+    """Every export format from chrome-extension/formats.js must be importable."""
+    samples = {
+        "json": __import__("json").dumps({
+            "version": 1, "source": "fxproxy-chrome-extension",
+            "accounts": [{"uid": "u1", "email": "a@b.c", "session_token": T1}],
+            "session_tokens": [T1, T2],
+        }),
+        "lines": f"{T1}\n{T2}\n",
+        "cookie": f"sessionToken={T1}; sessionToken={T2}\n",
+        "netscape": (
+            "# Netscape HTTP Cookie File\n"
+            f"accounts.firefox.com\tTRUE\t/\tTRUE\t4102444800\tsessionToken\t{T1}\n"
+            f"accounts.firefox.com\tTRUE\t/\tTRUE\t4102444800\tsessionToken\t{T2}\n"
+        ),
+        "csv": f"{T1}, {T2}\n",
+        "accounts": f"a@b.c {T1}\nd@e.f {T2}\n",
+    }
+    for kind, text in samples.items():
+        r = parse(text)
+        check(set(r["session_tokens"]) == {T1, T2}, f"plugin format '{kind}': 2 tokens parsed")
+
+
 if __name__ == "__main__":
     for fn in [
         test_extension_json, test_cookie_header, test_netscape_cookie_file,
         test_bare_tokens, test_bare_as_refresh, test_json_array,
-        test_fxs_prefixed, test_empty,
+        test_fxs_prefixed, test_empty, test_all_plugin_formats,
     ]:
         print(f"[{fn.__name__}]")
         fn()
