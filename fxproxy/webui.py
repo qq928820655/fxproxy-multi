@@ -1987,10 +1987,6 @@ class Panel:
                         f"      path: /vless/{nh}\n"
                         "    udp: false\n"
                         "    ip-version: ipv4\n"
-                        "    smux:\n"
-                        "      enabled: true\n"
-                        "      protocol: smux\n"
-                        "      max-streams: 4\n"
                     )
             else:
                 per_node.append(
@@ -2006,10 +2002,6 @@ class Panel:
                     "      path: /vless\n"
                     "    udp: false\n"
                     "    ip-version: ipv4\n"
-                    "    smux:\n"
-                    "      enabled: true\n"
-                    "      protocol: smux\n"
-                    "      max-streams: 4\n"
                 )
             block = "".join(per_node) + "\n"
             marker = "proxy-groups:"
