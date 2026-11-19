@@ -49,7 +49,8 @@ def check(cond, msg):
 
 
 def fake_quota(self):
-    return {"uid": "uid-" + self.refresh_token[-1], "max_bytes": 50 * 1024**3,
+    self._uid = "uid-" + self.refresh_token[-1]
+    return {"uid": self._uid, "max_bytes": 50 * 1024**3,
             "remaining_bytes": 40 * 1024**3, "used_bytes": 10 * 1024**3,
             "reset": "2026-12-01T00:00:00Z", "unlimited": False,
             "subscribed": True, "limited_bandwidth": False}
@@ -188,6 +189,24 @@ async def main():
             r = await cli.post("/api/login", json={"mode": "token", "refresh_token": "tokC"})
             d3 = await r.json()
             check(d3["account_count"] == 3, "重复账号幂等")
+
+            print("[api] 同账号（同 uid）新凭证 → 更新而非新增")
+            # fake_quota 的 uid = "uid-"+token 末位，故 newA 与 tokA 同 uid
+            r = await cli.post("/api/login", json={"mode": "token", "refresh_token": "newA"})
+            du = await r.json()
+            check(du.get("action") == "updated" and du["account_count"] == 3,
+                  f"同 uid 原地更新不增账号（{du}）")
+            check("newA" in panel.pool.tokens and "tokA" not in panel.pool.tokens,
+                  "旧 token 被新 token 替换")
+            r = await cli.post("/api/login", json={"mode": "token", "refresh_token": "newD"})
+            da = await r.json()
+            check(da.get("action") == "added" and da["account_count"] == 4,
+                  f"不同 uid 才新增账号（{da}）")
+            # 还原现场，避免影响后续 remove/config 用例
+            panel.pool.replace_token(0, "tokA")
+            panel.pool.remove(3)
+            await asyncio.to_thread(panel._persist)
+            check(panel.pool.tokens == ["tokA", "tokB", "tokC"], "测试后还原账号池")
 
             print("[api] remove")
             r = await cli.post("/api/account/remove", json={"index": 0})

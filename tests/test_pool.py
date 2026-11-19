@@ -90,6 +90,20 @@ def test_pool_add_remove():
         check(True, "至少保留一个账号")
 
 
+def test_upsert_by_uid():
+    print("[pool] 同 uid 更新而非新增")
+    pool = TokenPool(["tokA", "tokB"])
+    pool.clients[0]._uid = 111
+    pool.clients[1]._uid = 222
+    check(pool.uid_index() == {"111": 0, "222": 1}, "uid_index 映射正确")
+    check(pool.upsert("tokNew", 111) == "updated", "同 uid 返回 updated")
+    check(pool.tokens == ["tokNew", "tokB"], "同 uid 原地替换，顺序不变")
+    check(len(pool.clients) == 2, "同 uid 不增加账号数")
+    check(pool.upsert("tokC", 333) == "added", "新 uid 返回 added")
+    check(len(pool.clients) == 3, "新 uid 增加账号数")
+    check(pool.upsert("tokNew", 111) == "skipped", "重复 token 返回 skipped")
+
+
 def test_pool_quota_weight():
     print("[pool] quota 按剩余加权")
     pool = TokenPool(["t1", "t2"], strategy="quota")
@@ -277,6 +291,7 @@ if __name__ == "__main__":
     test_pool_failover()
     test_pool_cooldown_all()
     test_pool_add_remove()
+    test_upsert_by_uid()
     test_pool_quota_weight()
     test_quota_not_falsely_unlimited()
     test_account_auth_failure_is_distinct()

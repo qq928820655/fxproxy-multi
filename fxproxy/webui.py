@@ -748,8 +748,17 @@ async function doLogin(body, btn){
   const r = await fetch("/api/login",{method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
   const d = await r.json(); btn.disabled = false;
-  $("loginMsg").textContent = d.error ? ("失败："+d.error)
-    : ("成功，现有 "+(d.account_count||1)+" 个账号");
+  let msg;
+  if(d.error){ msg = "失败："+d.error; }
+  else if(d.added!=null || d.updated!=null){
+    const parts=[];
+    if(d.added) parts.push("新增 "+d.added);
+    if(d.updated) parts.push("更新 "+d.updated);
+    if(d.skipped) parts.push("跳过 "+d.skipped);
+    msg = "成功"+(parts.length?("（"+parts.join("，")+"）"):"")
+        +"，现有 "+(d.account_count||1)+" 个账号";
+  } else { msg = "成功，现有 "+(d.account_count||1)+" 个账号"; }
+  $("loginMsg").textContent = msg;
   $("password").value = ""; $("sessionToken").value = ""; $("refreshToken").value = ""; $("cookieData").value = "";
   await loadServers(); await loadState(); await loadAccounts();
 }
@@ -1621,24 +1630,44 @@ class Panel:
                     return web.json_response({"error": f"凭证格式无法识别：{e}"})
 
                 existing = set(self.pool.tokens) if self.pool is not None else set()
+                # 先刷新已有账号的 uid，才能判断“同账号新 cookie”该更新而非新增
+                if self.pool is not None:
+                    try:
+                        await asyncio.to_thread(self.pool.quota_snapshot)
+                    except Exception:
+                        pass
+                uid_map = self.pool.uid_index() if self.pool is not None else {}
                 new_tokens: list[str] = []
-                added, skipped, errors = 0, 0, []
+                added, skipped, updated, errors = 0, 0, 0, []
 
                 def _verify(rt):
-                    # 在 worker 线程内同步验证，不阻塞事件循环
-                    GuardianClient(rt).quota()
-                    return rt
+                    # 在 worker 线程内同步验证，返回账号 uid（失败抛异常）
+                    gc = GuardianClient(rt)
+                    gc.quota()
+                    return gc._uid
 
                 async def _take(rt, label):
-                    nonlocal added, skipped
+                    nonlocal added, skipped, updated
                     if rt in existing or rt in new_tokens:
                         skipped += 1
                         return
                     try:
-                        await asyncio.to_thread(_verify, rt)
+                        uid = await asyncio.to_thread(_verify, rt)
                     except Exception as e:
                         errors.append(f"{label} {str(rt)[:8]}…: {e}")
                         return
+                    key = str(uid) if uid else None
+                    if key and key in uid_map:
+                        idx = uid_map[key]
+                        if self.pool is not None and idx >= 0:
+                            # 同账号（uid 相同）重新导入：原地换 token，不新增
+                            self.pool.replace_token(idx, rt)
+                            updated += 1
+                        else:
+                            skipped += 1  # 本批次内重复的 uid
+                        return
+                    if key:
+                        uid_map[key] = -1  # 占位，后续同 uid 命中上面的分支
                     new_tokens.append(rt)
                     added += 1
 
@@ -1661,7 +1690,7 @@ class Panel:
                             except Exception as e:
                                 errors.append(f"sessionToken {st[:8]}…: {e}")
 
-                if not added and not skipped:
+                if not added and not skipped and not updated:
                     msg = "没有成功导入任何账号"
                     if errors:
                         msg += "：" + "; ".join(errors[:3])
@@ -1683,7 +1712,7 @@ class Panel:
                             pass  # 并发下重复：幂等忽略
                 await asyncio.to_thread(self._persist)
                 out = {"ok": True, "added": added, "skipped": skipped,
-                       "account_count": len(self.pool.clients)}
+                       "updated": updated, "account_count": len(self.pool.clients)}
                 if errors:
                     out["warnings"] = errors[:5]
                 return web.json_response(out)
@@ -1712,18 +1741,35 @@ class Panel:
                 return web.json_response({"error": f"未知登录方式: {mode}"})
 
             rt = res["refresh_token"]
+
+            def _probe_uid():
+                gc = GuardianClient(rt)
+                gc.quota()
+                return gc._uid
+
+            try:
+                uid = await asyncio.to_thread(_probe_uid)
+            except Exception:
+                uid = None
             if self.pool is None:
-                self.pool = self._make_pool() or TokenPool(
+                self.pool = self._make_pool()
+            if self.pool is None:
+                self.pool = TokenPool(
                     [rt],
                     cooldown=self.cfg.get("cooldown_seconds", 300),
                     quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60),
                 )
-            try:
-                await asyncio.to_thread(self.pool.add, rt)
-            except ValueError:
-                pass  # 重复账号：幂等，直接忽略
+                action = "added"
+            else:
+                # 让已有账号补全 uid，才能把“同账号新凭证”识别为更新
+                try:
+                    await asyncio.to_thread(self.pool.quota_snapshot)
+                except Exception:
+                    pass
+                action = await asyncio.to_thread(self.pool.upsert, rt, uid)
             await asyncio.to_thread(self._persist)
-            return web.json_response({"ok": True, "account_count": len(self.pool.clients)})
+            return web.json_response({"ok": True, "action": action,
+                                      "account_count": len(self.pool.clients)})
         except Exception as e:
             return web.json_response({"error": str(e)})
 

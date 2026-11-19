@@ -90,6 +90,19 @@ class GuardianClient:
         self._pass: Optional[str] = None
         self._pass_exp: float = 0.0
         self._quota_hdr: dict = {}
+        self._uid = None          # 账号唯一 id（来自 status），用于去重/更新
+
+    def update_refresh_token(self, token: str) -> None:
+        """换掉本账号的 refresh_token（同账号重新导入新 cookie 时用），
+        同时清空派生缓存，下一次请求会用新凭证重新换取 access/pass。"""
+        with self._lock:
+            self.refresh_token = (token or "").strip()
+            self._access_token = None
+            self._access_exp = 0.0
+            self._pass = None
+            self._pass_exp = 0.0
+            self._quota_hdr = {}
+            self._uid = None
 
     # ---- access token -------------------------------------------------
     def _refresh_access_token(self) -> str:
@@ -165,6 +178,7 @@ class GuardianClient:
         yet still has maxBytes set — never report it as unlimited in that case.
         """
         s = self.status()
+        self._uid = s.get("uid")
         max_bytes = int(s.get("maxBytes", 0) or 0)
         limited = bool(s.get("limited_bandwidth", False))
         subscribed = bool(s.get("subscribed", False))
@@ -308,6 +322,47 @@ class TokenPool:
                 raise ValueError("该账号已在池中")
             self.clients.append(GuardianClient(token, session=self._session))
             return len(self.clients) - 1
+
+    def replace_token(self, index: int, token: str) -> None:
+        """Replace account ``index``'s refresh_token in place (same account,
+        new cookie). Keeps pool order/position, clears stale caches."""
+        token = (token or "").strip()
+        if not token:
+            raise ValueError("empty refresh_token")
+        with self._lock:
+            if not 0 <= index < len(self.clients):
+                raise IndexError(f"账号序号 {index} 不存在")
+            if token in self.tokens and self.tokens[index] != token:
+                raise ValueError("该 token 已属于另一个账号")
+            self.clients[index].update_refresh_token(token)
+            self._quota_cache.pop(index, None)
+
+    def uid_index(self) -> dict:
+        """Map known account uid -> index (only clients whose uid was fetched)."""
+        with self._lock:
+            return {str(c._uid): i for i, c in enumerate(self.clients) if c._uid}
+
+    def upsert(self, token: str, uid=None) -> str:
+        """Add ``token``, or replace an existing account with the same ``uid``.
+
+        Returns ``"added"`` / ``"updated"`` / ``"skipped"``. Same Firefox
+        account re-imported with a fresh cookie keeps one slot instead of
+        duplicating.
+        """
+        token = (token or "").strip()
+        if not token:
+            raise ValueError("empty refresh_token")
+        with self._lock:
+            if token in self.tokens:
+                return "skipped"
+            if uid:
+                for i, c in enumerate(self.clients):
+                    if c._uid and str(c._uid) == str(uid):
+                        c.update_refresh_token(token)
+                        self._quota_cache.pop(i, None)
+                        return "updated"
+            self.clients.append(GuardianClient(token, session=self._session))
+            return "added"
 
     def remove(self, index: int) -> None:
         with self._lock:
