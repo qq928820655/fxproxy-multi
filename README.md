@@ -97,18 +97,15 @@ VirtualBrowser 官方文档写明：ZIP = "unpacked source with manifest.json at
 
 自己打包：`cd chrome-extension && zip -r ../fxproxy-chrome-extension.zip .`（`manifest.json` 必须在根，不能套子文件夹）。
 
-**B. CRX（packaged）—— 直接导入本地 CRX 文件时用**
+**B. CRX —— 不推荐，直接用 A 的 ZIP**
 
-仓库根目录的 `fxproxy-chrome-extension.crx` 是 **CRX2**（RSA-SHA256 有效签名，五个文件平铺根目录）。
-用 CRX2 是因为 VirtualBrowser 解析标准 CRX3 的 protobuf 头会崩，报
-`Cannot read properties of null (reading 'toString')`；CRX2 是固定 16 字节头，兼容最广。
+VirtualBrowser 的「本地CRX文件」通道只认 **CRX3**：CRX2 会被拒并报 `not a crx3 file`；
+而它的 CRX3 解析器对非其商店签发的包不稳定，实测自建签名 CRX3 会报
+`Cannot read properties of null (reading 'toString')`。所以这个通道对自建扩展不可靠。
 
-- 在「插件管理 → 安装插件 → 本地 CRX 文件」里选中它。
-- 若报 `ENOENT: ... extensions\...\content.js`，是内部多套了一层 `fxproxy-chrome-extension/` 目录的旧包，
-  换成仓库这个即可；若报 `null (reading 'toString')`，是用了 CRX3，换成仓库这个 CRX2。
+- 仓库里的 `fxproxy-chrome-extension.crx` 是 CRX2，仅作格式参考（`python tools/build_crx.py` 生成，`--crx3` 出 CRX3）。
 - 自校验：`python tools/build_crx.py --verify fxproxy-chrome-extension.crx`
-- 重新生成：`python tools/build_crx.py`（CRX2 默认；`--crx3` 出 CRX3；依赖 `pip install cryptography`）。
-- 如果这两种 CRX 在你的客户端版本上都不行，直接用 **A. zip**。
+- 遇到 `not a crx3 file` / `null (reading 'toString')` / `ENOENT ... content.js`，**改用 A 的 ZIP 上传**即可，不要在这个通道上继续试。
 
 **C. 普通 Chrome**：打开 `chrome://extensions/` → 开「开发者模式」→「加载已解压的扩展程序」→
 选仓库里的 `chrome-extension/` 目录（或 A 里解压出的目录）。
