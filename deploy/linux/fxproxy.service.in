@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%DIR%
 Environment=FXPROXY_CONFIG=%CONFIG%
-ExecStart=%BIN% -c %CONFIG% run
+ExecStart="%BIN%" -c "%CONFIG%" run
 Restart=on-failure
 RestartSec=5
 # 单进程要扛几百条并发隧道（每条一个上游 TLS），默认 1024 不够

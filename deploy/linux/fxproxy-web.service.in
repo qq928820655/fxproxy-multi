@@ -9,7 +9,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%DIR%
 Environment=FXPROXY_CONFIG=%CONFIG%
-ExecStart=%BIN% -c %CONFIG% web --no-open --web-host %WEB_HOST% --web-port %WEB_PORT%
+ExecStart="%BIN%" -c "%CONFIG%" web --no-open --web-host %WEB_HOST% --web-port %WEB_PORT%
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
