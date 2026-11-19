@@ -327,6 +327,9 @@ async def main():
                 cfgpath = Path(d) / "sub.json"
                 cfgpath.write_text(json.dumps({"refresh_tokens": ["tokA"]}), encoding="utf-8")
                 pp = Panel(str(cfgpath))
+                # vless 节点是否导出取决于本机 bridge/uuid.txt（gitignore 文件）。
+                # 干净环境没有它，这里桩一个，避免测试结果随开发机状态漂移。
+                pp._bridge_uuid = lambda: "11111111-2222-3333-4444-555555555555"
                 app2 = web.Application()
                 app2.router.add_get("/clash.yaml", pp.api_clash)
                 async with TestClient(TestServer(app2)) as c2:
