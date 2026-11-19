@@ -189,21 +189,23 @@ Python ≥ 3.10。
 | 文件 | 用途 |
 |---|---|
 | `dist/fxproxy-<版本>-win.zip` | Windows 全量包。解压 → 双击 `deploy\windows\install.bat` |
+| `dist/fxproxy-<版本>-linux.tar.gz` | Linux 全量包。解压 → `sudo ./deploy/linux/install.sh` |
 | `fxproxy-chrome-extension.zip` | 浏览器扩展，Chromium 内核「加载已解压的扩展程序」选解压目录 |
 | `fxproxy-chrome-extension.crx` | 同上的 CRX3 包（部分指纹浏览器只吃 CRX，装不上就用 zip） |
 
 自己重打：
 
 ```bash
-python tools/build_zip.py          # 扩展 zip（顶层唯一目录，--verify 校验）
-python tools/build_crx.py          # 扩展 CRX3 包，复用 tools/.crx-key.pem 固定 crx_id
-python tools/build_release.py      # Windows 全量发行包 -> dist/fxproxy-<ver>-win.zip
-python tools/build_release.py --check   # 只校验已有包结构
+python tools/build_zip.py                     # 扩展 zip（顶层唯一目录，--verify 校验）
+python tools/build_crx.py                     # 扩展 CRX3，复用 tools/.crx-key.pem 固定 crx_id
+python tools/build_release.py                 # 两个平台的包都打
+python tools/build_release.py --target linux  # 只打 Linux tar.gz（.sh 保留 0755）
+python tools/build_release.py --check         # 只校验已有包结构
 ```
 
 发行包里刻意不含：`.git` / `.venv` / 真实 `config.json`（含凭证）/ `tools/.crx-key.pem`（签名私钥）。
 
-还有 GitHub Releases 里挂同样的三个文件，直接从网页下载。
+还有 GitHub Releases 里挂同样的文件，直接从网页下载。
 
 ## 快速开始
 
@@ -214,6 +216,7 @@ python tools/build_release.py --check   # 只校验已有包结构
 
 ```bat
 install.bat -Country US -Autostart              :: 指定国家 + 开机自启
+install.bat -Country US -Shortcut               :: 加一个桌面「fxproxy 启动」快捷方式
 install.bat -CookieFile D:\export.json          :: 直接导入插件导出文件
 install.bat -NoStart                            :: 只装不起
 install.bat -Uninstall                          :: 停进程 + 删 venv/.run/计划任务
@@ -258,10 +261,42 @@ fxproxy web               # 或 python -m fxproxy web
 > '@ | Set-Content -Encoding utf8 "$dir\config.json"
 > ```
 
-### macOS / Linux
+### Linux —— 一键部署（推荐）
 
 ```bash
-git clone https://github.com/ios151/firefox.git && cd firefox
+tar xzf fxproxy-0.3.2-linux.tar.gz && cd fxproxy-0.3.2
+sudo ./deploy/linux/install.sh --token 你的refresh_token --country US
+```
+
+一条命令做完：装系统包与 Python 依赖 → 建 venv → 写 `config.json`（600）→ 装两个 systemd
+单元（`fxproxy` + `fxproxy-web`，开机自启）→ 启动并打印面板地址。端口被占自动顺延；
+没有 systemd（容器 / WSL1）降级 nohup 后台。
+
+```bash
+sudo ./deploy/linux/install.sh --token T1,T2 --country US         # 机房落地
+sudo ./deploy/linux/install.sh --cookie-file ./export.json        # 插件导出文件
+sudo ./deploy/linux/install.sh --host 0.0.0.0 --web-host 0.0.0.0 \
+     --sub-server 203.0.113.9                                     # 对外提供服务
+./deploy/linux/install.sh --user --token T1                       # 普通用户装到 ~/.local
+./deploy/linux/install.sh --dry-run                               # 先看会做什么
+sudo ./deploy/linux/install.sh --uninstall [--purge]              # 卸载
+```
+
+装完统一用 `fxproxy-ctl` 管：
+
+```bash
+fxproxy-ctl status      # 进程 / 端口 / 账号数 / 当前出口（顺带打一次 /api/state）
+fxproxy-ctl start | stop | restart | logs | update | url
+```
+
+支持 Debian/Ubuntu（apt）、RHEL/Rocky/Alma/Fedora（dnf/yum）、Arch（pacman）、
+Alpine（apk）、openSUSE（zypper），x86_64 与 aarch64 都行；Python 需 ≥ 3.10。
+细节与故障排查见 [deploy/linux/README.md](deploy/linux/README.md)。
+
+### macOS / Linux（手动）
+
+```bash
+git clone https://github.com/qq928820655/fxproxy-multi.git && cd fxproxy-multi
 pip install -e .
 fxproxy login --email you@example.com      # 首次：换取并保存 refresh_token
 fxproxy web                                # 打开控制面板

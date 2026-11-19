@@ -37,6 +37,9 @@
 .PARAMETER Autostart
     注册登录时自动启动（schtasks，用户级，不需要管理员）。
 
+.PARAMETER Shortcut
+    在桌面建「fxproxy 启动」快捷方式，双击等价于 start.bat（起服务 + 开面板）。
+
 .PARAMETER Uninstall
     停止进程、删 venv/.run/计划任务。config.json 里的凭证保留。
 
@@ -59,6 +62,7 @@ param(
     [switch]$SkipLogin,
     [switch]$NoStart,
     [switch]$Autostart,
+    [switch]$Shortcut,
     [switch]$Uninstall
 )
 
@@ -77,6 +81,25 @@ function Die($m)  { Write-Host "    X    $m" -ForegroundColor Red; exit 1 }
 
 function Write-NoBom([string]$Path, [string]$Text) {
     [IO.File]::WriteAllText($Path, $Text, (New-Object Text.UTF8Encoding($false)))
+}
+
+# 桌面快捷方式：双击 = start.bat（起服务 + 开面板），不用记路径
+function New-StartShortcut {
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    if (-not $desktop) { Warn "取不到桌面目录，跳过快捷方式"; return }
+    $lnk = Join-Path $desktop "fxproxy 启动.lnk"
+    try {
+        $sh = New-Object -ComObject WScript.Shell
+        $s = $sh.CreateShortcut($lnk)
+        $s.TargetPath = Join-Path $PSScriptRoot "start.bat"
+        $s.WorkingDirectory = $Root
+        $s.IconLocation = "$env:SystemRoot\System32\shell32.dll,13"
+        $s.Description = "启动 fxproxy 并打开控制面板"
+        $s.Save()
+        Ok "桌面快捷方式：$lnk"
+    } catch {
+        Warn "创建快捷方式失败：$($_.Exception.Message)"
+    }
 }
 
 function Test-PortBusy([int]$Port) {
@@ -401,6 +424,11 @@ if ($Autostart) {
     $tr = 'cmd /c ""' + $ctl + '" start"'
     schtasks /create /tn $TaskName /tr $tr /sc onlogon /rl limited /f 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Ok "已注册计划任务 $TaskName" } else { Warn "注册失败，可手动：计划任务 -> 登录时运行 $ctl start" }
+}
+
+if ($Shortcut) {
+    Step "创建桌面快捷方式"
+    New-StartShortcut
 }
 
 Write-Host ""

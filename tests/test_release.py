@@ -6,13 +6,15 @@
 运行: python tests/test_release.py
 """
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.build_release import REQUIRED, build, verify, version  # noqa: E402
+from tools.build_release import (REQUIRED, build, build_tar, verify, verify_tar,  # noqa: E402
+                                 version)
 
 PASS = 0
 
@@ -75,6 +77,35 @@ def main():
             dst.writestr(f"{top}/tools/.crx-key.pem", b"secret")
         ok4, probs4 = verify(dirty, top)
         check(not ok4 and any("crx-key" in p for p in probs4), "私钥混入被拒")
+
+        print("[release] Linux tar.gz")
+        tar_out = Path(d) / f"{top}-linux.tar.gz"
+        meta_t = build_tar(tar_out, top)
+        check(tar_out.is_file() and meta_t["count"] > 20, f"tar 构建出 {meta_t['count']} 个文件")
+        ok_t, probs_t = verify_tar(tar_out, top)
+        check(ok_t, f"tar 结构校验通过（{probs_t or '无问题'}）")
+        with tarfile.open(tar_out) as tf:
+            members = tf.getmembers()
+            names_t = {m.name for m in members if m.isfile()}
+            shs = [m for m in members if m.name.endswith(".sh")]
+            check(len(shs) >= 2, f"tar 里有两个 Linux 脚本（实得 {len(shs)}）")
+            check(all(m.mode & 0o111 for m in shs), "tar 里 .sh 都是 0755")
+            check(all(b"\r\n" not in tf.extractfile(m).read() for m in shs),
+                  "tar 里 .sh 都是 LF")
+            check(all(m.uid == 0 and m.gid == 0 for m in members), "tar 归零 uid/gid")
+        for req in ("deploy/linux/install.sh", "deploy/linux/fxproxy-ctl.sh",
+                    "deploy/windows/install.bat"):
+            check(f"{top}/{req}" in names_t, f"tar 包含 {req}")
+
+        # 缺 install.sh 的 tar 必须被拒
+        broken_tar = Path(d) / "broken.tar.gz"
+        with tarfile.open(tar_out) as src, tarfile.open(broken_tar, "w:gz") as dst:
+            for m in src.getmembers():
+                if m.name.endswith("deploy/linux/install.sh"):
+                    continue
+                dst.addfile(m, src.extractfile(m) if m.isfile() else None)
+        ok_bt, probs_bt = verify_tar(broken_tar, top)
+        check(not ok_bt and any("install.sh" in p for p in probs_bt), "tar 缺 install.sh 被拒")
 
     print(f"\nALL PASS ({PASS} checks)")
 

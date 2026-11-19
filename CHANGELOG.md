@@ -3,6 +3,30 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 上游基线：`c4ba254`（ios151/firefox）。
 
+## [0.3.2] — 2026-11-19
+
+### 新增
+
+- **Linux 一键部署**：`deploy/linux/install.sh` 一条命令装完（venv + 依赖 + 配置 +
+  systemd 开机自启），覆盖 apt / dnf / yum / pacman / apk / zypper，x86_64 与 aarch64。
+  - 自动装 Python 3.10+（低版本给明确结论而不是装出个跑不起来的）
+  - 端口被占自动顺延，结果打印出来
+  - 有 systemd 装 `fxproxy.service` + `fxproxy-web.service`（分开：面板挂了不拖累代理），
+    用户级安装自动 `loginctl enable-linger`；没 systemd 降级 nohup
+  - `fxproxy-ctl start|stop|restart|status|logs|update|url|uninstall`，
+    `status` 顺带打一次 `/api/state` 显示账号数与出口
+  - `--dry-run` 只打印步骤，`--uninstall --purge` 连凭证一起清
+- **Linux 发行包**：`tools/build_release.py --target linux` 出 `dist/fxproxy-<ver>-linux.tar.gz`，
+  `.sh` 保留 0755（zip 存不住执行位）。
+- **Windows 一键启动**：`install.ps1 -Shortcut` 在桌面建「fxproxy 启动」快捷方式，
+  双击等价于 `start.bat`（起服务 + 开面板）。
+
+### 修复
+
+- `.gitattributes` 补 `deploy/linux/* text eol=lf`：之前只有 `deploy/*.sh`，
+  子目录脚本在 Windows checkout 会变 CRLF，Linux 上 `bash install.sh` 直接
+  `bad interpreter`。发行包校验也加了这条检查（zip 与 tar 都查）。
+
 ## [0.3.1] — 2026-11-19
 
 ### 新增

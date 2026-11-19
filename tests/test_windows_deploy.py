@@ -106,6 +106,18 @@ def main():
     check("自动顺延" in ins, "install.ps1 非交互重跑时顺延到空闲端口")
     check("1-65535" in ins, "install.ps1 校验端口范围")
 
+    print("\n[win] 一键启动")
+    sb = (WD / "start.bat")
+    check(sb.is_file(), "start.bat 存在（双击即启动）")
+    check("ctl.ps1\" start -Open" in sb.read_text(encoding="ascii"),
+          "start.bat 调 ctl.ps1 start -Open（起服务并开面板）")
+    check("[switch]$Shortcut" in ins, "install.ps1 支持 -Shortcut")
+    check("New-StartShortcut" in ins, "有创建快捷方式的函数")
+    check("WScript.Shell" in ins, "用 WScript.Shell 建 .lnk")
+    check('"fxproxy 启动.lnk"' in ins, "快捷方式名固定，重复安装覆盖同一个")
+    check("start.bat" in ins, "快捷方式指向 start.bat")
+    check(".PARAMETER Shortcut" in ins, "帮助里有 -Shortcut 说明")
+
     print("\n[win] 卸载路径存在")
     check("Uninstall" in ins, "install.ps1 支持 -Uninstall")
     check("fxproxy-run" in ins or "schtasks" in ins.lower(),

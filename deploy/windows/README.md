@@ -21,6 +21,7 @@ install.bat -CookieFile D:\export.json        :: 直接吃插件导出文件（�
 install.bat -SkipLogin                        :: 先不导凭证，稍后在面板加
 install.bat -NoStart                          :: 只装不起
 install.bat -Autostart                        :: 注册登录自启（schtasks，用户级，无需管理员）
+install.bat -Shortcut                         :: 桌面建「fxproxy 启动」快捷方式（双击=起服务+开面板）
 install.bat -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple   :: 走国内镜像
 install.bat -Proxy http://127.0.0.1:7890          :: pip 走指定代理（系统代理配错时用）
 install.bat -NoProxy                              :: 忽略系统代理直连（配合镜像用）

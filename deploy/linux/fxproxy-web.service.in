@@ -1,0 +1,19 @@
+[Unit]
+Description=fxproxy control panel + Clash/Mihomo subscription
+Documentation=https://github.com/qq928820655/fxproxy-multi
+After=network-online.target fxproxy.service
+Wants=network-online.target
+# 面板挂了不影响代理，所以只 After 不 Requires
+
+[Service]
+Type=simple
+WorkingDirectory=%DIR%
+Environment=FXPROXY_CONFIG=%CONFIG%
+ExecStart=%BIN% -c %CONFIG% web --no-open --web-host %WEB_HOST% --web-port %WEB_PORT%
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
