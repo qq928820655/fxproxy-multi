@@ -320,6 +320,8 @@ PAGE = r"""<!doctype html>
       </select>
       <button id="strategyBtn" class="sm">应用策略</button>
       <button id="refreshQuotaBtn" class="sm">刷新配额</button>
+      <button id="selAllBtn" class="sm">全选</button>
+      <button id="exportBtn" class="sm" disabled>导出选中</button>
       <button id="addToggle" class="primary sm">+ 添加账号</button>
     </div>
     <div class="row" style="margin-bottom:12px;">
@@ -335,8 +337,8 @@ PAGE = r"""<!doctype html>
       <span class="muted" style="font-size:12px;">仅控制面请求（刷新 token/取 pass/节点列表）换成 Firefox UA，降低 python-requests 指纹；不影响代理流量</span>
     </div>
     <table class="acct">
-      <thead><tr><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
-      <tbody id="acctBody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+      <thead><tr><th><input type="checkbox" id="selAll" title="全选"></th><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
+      <tbody id="acctBody"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
     </table>
     <div class="kv" style="margin-top:10px;"><span>总剩余</span><b id="totalRemain">—</b></div>
   </div>
@@ -725,6 +727,37 @@ function renderQuota(d){
   bar.style.background = pct >= 90 ? "#da3633" : (pct >= 70 ? "#d29922" : "#2ea043");
   $("qSub").textContent = sub;
 }
+let SELECTED = new Set();
+let ACCT_TOTAL = 0;
+function onSel(i, on){ if(on) SELECTED.add(i); else SELECTED.delete(i); updateSelUI(); }
+function updateSelUI(){
+  const n = SELECTED.size;
+  const b = $("exportBtn");
+  if(b){ b.disabled = n===0; b.textContent = n? ("导出选中 ("+n+")") : "导出选中"; }
+  const all = $("selAll");
+  if(all){ all.checked = n>0 && n===ACCT_TOTAL; all.indeterminate = n>0 && n<ACCT_TOTAL; }
+}
+function selectAll(on){
+  SELECTED = on ? new Set(Array.from({length:ACCT_TOTAL},(_,i)=>i)) : new Set();
+  document.querySelectorAll(".acctChk").forEach(cb=>{ cb.checked = SELECTED.has(+cb.dataset.i); });
+  updateSelUI();
+}
+$("selAll").onchange = () => selectAll($("selAll").checked);
+$("selAllBtn").onclick = () => selectAll(SELECTED.size !== ACCT_TOTAL);
+$("exportBtn").onclick = async () => {
+  const idx = Array.from(SELECTED).sort((a,b)=>a-b);
+  if(!idx.length){ alert("请先勾选账号"); return; }
+  const r = await fetch("/api/accounts/export",{method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({indices:idx})});
+  const d = await r.json();
+  if(d.error){ alert("导出失败："+d.error); return; }
+  const blob = new Blob([JSON.stringify(d,null,2)],{type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "fxproxy-accounts-"+new Date().toISOString().slice(0,10)+".json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+};
 async function loadAccounts(){
   try{
     const r = await timeoutFetch("/api/accounts", null, 25000); const d = await r.json();
@@ -746,12 +779,19 @@ async function loadAccounts(){
         rem = "月度 "+fmt(a.max_bytes)+" · 用量待取";
       } else { rem = (a.error||"—").slice(0,32); }
       // data-l 给窄屏用：表头隐藏后靠它显示字段名
-      return `<tr><td class="mail" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
+      return `<tr><td class="sel" data-l="选择"><input type="checkbox" class="acctChk" data-i="${i}" ${SELECTED.has(i)?'checked':''}></td>`+
+        `<td class="mail" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
         <td data-l="uid">${a.uid||"—"}</td><td data-l="状态">${st}</td>
         <td class="quota" data-l="已用 / 月度">${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
         <td data-l="操作"><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
     });
-    $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无账号</td></tr>';
+    $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="7" class="muted">无账号</td></tr>';
+    ACCT_TOTAL = (d.accounts||[]).length;
+    SELECTED.forEach(i=>{ if(i>=ACCT_TOTAL) SELECTED.delete(i); });
+    document.querySelectorAll(".acctChk").forEach(cb=>{
+      cb.onchange = () => onSel(+cb.dataset.i, cb.checked);
+    });
+    updateSelUI();
     const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
     // 已用：优先用后端对齐后的 display_used_bytes（Firefox 基线 + 其后本地新增）
     const localUsed = d.local_used_bytes||0;
@@ -764,7 +804,7 @@ async function loadAccounts(){
          : (remTxt || (d.total_max_bytes!=null ? "月度 "+fmt(d.total_max_bytes)+" · 用量待取" : "部分未知")));
     renderQuota(d);
   }catch(e){
-    $("acctBody").innerHTML = '<tr><td colspan="6" class="muted">加载失败</td></tr>';
+    $("acctBody").innerHTML = '<tr><td colspan="7" class="muted">加载失败</td></tr>';
     renderQuota(null);
   }
 }
@@ -1357,6 +1397,48 @@ class Panel:
             return web.json_response({"ok": False})
         await asyncio.to_thread(self.pool.refresh_quotas)
         return web.json_response({"ok": True})
+
+    async def api_accounts_export(self, req):
+        """Export selected accounts (by index) as a JSON doc that the cookie
+        import can read back: ``accounts[]`` with uid/email/refresh_token.
+        ``_walk_json`` maps the ``refresh_token`` keys into the refresh list,
+        so the same text can be pasted straight into 添加账号 → Cookie 模式."""
+        if self.pool is None or not self.pool.clients:
+            return web.json_response({"error": "无账号"}, status=400)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        n = len(self.pool.clients)
+        raw = body.get("indices")
+        if raw is None:
+            sel = list(range(n))
+        else:
+            sel = []
+            for x in raw:
+                try:
+                    i = int(x)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i < n and i not in sel:
+                    sel.append(i)
+            sel.sort()
+        if not sel:
+            return web.json_response({"error": "未选择账号"}, status=400)
+        accounts = []
+        for i in sel:
+            c = self.pool.clients[i]
+            accounts.append({
+                "uid": getattr(c, "_uid", None),
+                "email": getattr(c, "_email", None),
+                "refresh_token": c.refresh_token,
+            })
+        return web.json_response({
+            "format": "fxproxy-accounts",
+            "version": 1,
+            "exported_at": int(time.time()),
+            "accounts": accounts,
+        })
 
     async def api_account_remove(self, req):
         try:
@@ -2725,6 +2807,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.get("/api/state", panel.api_state),
         web.get("/api/accounts", panel.api_accounts),
         web.post("/api/accounts/refresh", panel.api_accounts_refresh),
+        web.post("/api/accounts/export", panel.api_accounts_export),
         web.post("/api/account/remove", panel.api_account_remove),
         web.post("/api/strategy", panel.api_strategy),
         web.post("/api/force-ipv4", panel.api_force_ipv4),

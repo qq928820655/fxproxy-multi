@@ -86,6 +86,7 @@ async def main():
             web.get("/api/state", panel.api_state),
             web.get("/api/accounts", panel.api_accounts),
             web.post("/api/accounts/refresh", panel.api_accounts_refresh),
+            web.post("/api/accounts/export", panel.api_accounts_export),
             web.post("/api/account/remove", panel.api_account_remove),
             web.post("/api/strategy", panel.api_strategy),
             web.post("/api/force-ipv4", panel.api_force_ipv4),
@@ -252,6 +253,25 @@ async def main():
             c = json.loads(d5["config"])
             check(c["refresh_tokens"] == ["tokB", "tokC"], "导出含全部 token")
             check(c["refresh_token"] == "tokB", "导出含兼容字段")
+
+            print("[api] 账号导出（多选）")
+            r = await cli.post("/api/accounts/export", json={"indices": [0]})
+            ex = await r.json()
+            check(ex.get("format") == "fxproxy-accounts"
+                  and ex["accounts"][0]["refresh_token"] == "tokB",
+                  "按索引导出单个账号")
+            r = await cli.post("/api/accounts/export", json={"indices": [0, 1]})
+            ex2 = await r.json()
+            check([a["refresh_token"] for a in ex2["accounts"]] == ["tokB", "tokC"],
+                  "多选导出顺序正确")
+            # 导出格式应能被导入解析器读回（refresh_token 归入 refresh 桶）
+            from fxproxy import cookieutil
+            hexrt = "a" * 64
+            sample = json.dumps({"accounts": [
+                {"uid": 1, "email": "x@y.z", "refresh_token": hexrt}]})
+            parsed = cookieutil.parse(sample)
+            check(parsed["refresh_tokens"] == [hexrt] and parsed["session_tokens"] == [],
+                  "导出 JSON 可被导入解析为 refresh_token")
 
             print("[api] cookie 模式导入")
             T1 = "a" * 64
