@@ -78,6 +78,51 @@ FXPROXY_REFRESH_TOKENS="token1,token2,token3"   # 批量（逗号/换行/分号�
 FXPROXY_REFRESH_TOKEN="token1"                  # 单个，优先级最高，置顶
 ```
 
+### Chrome 插件一键提取（住宅 IP 登录）
+
+Mozilla 对 `/account/login` 和 `/account/create` 按机房 IP 风控（406），首次登录必须在住宅 IP 做。
+`chrome-extension/` 里有一个 Manifest V3 插件，在你**已登录**的 Chrome 里一键取出 FxA 凭证，
+复制到剪贴板，粘到面板即可。全程不发外部请求——只读页面自己的 localStorage/cookie。
+
+安装：
+
+1. Chrome 打开 `chrome://extensions/`，开「开发者模式」
+2. 「加载已解压的扩展程序」→ 选本仓库的 `chrome-extension/` 目录
+
+用法：
+
+1. 住宅 IP 的 Chrome 打开 `https://accounts.firefox.com/` 并登录（多个账号都登一遍也行）
+2. 点插件图标 → 「提取并复制凭证」
+3. 到 fxproxy 面板的「添加账号」，方式选 **Cookie / 插件导出**，粘贴 → 添加
+
+抓的是 `__fxa_storage.accounts` 里每个账号的 `sessionToken`（新版 `fxs_` Bearer token 会自动解码成 hex），
+再做一次 localStorage/sessionStorage/cookie 全量扫描兜底 key 改名。插件导出 JSON：
+
+```json
+{
+  "version": 1,
+  "source": "fxproxy-chrome-extension",
+  "accounts": [{"uid": "...", "email": "a@example.com", "session_token": "<64hex>"}],
+  "session_tokens": ["<64hex>"]
+}
+```
+
+面板的 cookie 模式兼容四种输入，可一次导入多个账号（重复自动跳过）：
+
+- 上面这个插件 JSON
+- `sessionToken=<hex>; ...` 形式的 Cookie 头 / Netscape cookie 文件行
+- 纯 `refresh_token`（hex），直接验证入池，不走 bootstrap
+- 多个 token（逗号/空格/换行分隔）
+
+命令行等价：
+
+```bash
+fxproxy login --cookie '{"session_tokens":["<64hex>"]}'   # 直接贴
+fxproxy login --cookie-file exported.json                 # 从文件读（插件导出的 JSON 内容）
+```
+
+拿到的是 `refresh_token`，它不受 IP 风控，可以搬到机房服务器用——住宅 IP 只需做这一次提取。
+
 ## 安装
 
 ```bash
@@ -348,5 +393,7 @@ journalctl -u fxproxy@$USER -f
 | `fxproxy/fxa_auth.py`    | 一次性凭证引导：登录/换 token、自助入组（enroll） |
 | `fxproxy/proxyserver.py` | 本地 HTTP CONNECT + SOCKS5 服务，上游 TLS+CONNECT 到 Fastly 节点 |
 | `fxproxy/config.py`      | 配置读写 |
-| `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口 |
-| `fxproxy/cli.py`         | 命令行入口（login / status / servers / run / web） |
+| `fxproxy/cookieutil.py`  | 解析插件导出 JSON / Cookie 头 / 多个 token，统一提取凭证 |
+| `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口、cookie 导入 |
+| `fxproxy/cli.py`         | 命令行入口（login / accounts / status / token / servers / run / web） |
+| `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken |

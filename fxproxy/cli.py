@@ -43,20 +43,83 @@ def _pool(args) -> TokenPool:
 
 
 def cmd_login(args):
+    from . import cookieutil
+
+    cfg = cfgmod.load(args.config)
+    tokens = cfg.get("refresh_tokens") or []
+
+    # Cookie / 插件导出路径：可能一次导入多个账号
+    cookie_raw = getattr(args, "cookie", None)
+    cookie_file = getattr(args, "cookie_file", None)
+    if cookie_file:
+        try:
+            with open(cookie_file, "r", encoding="utf-8") as fh:
+                cookie_raw = fh.read()
+        except OSError as e:
+            print(f"[!] 读取 cookie 文件失败: {e}", file=sys.stderr)
+            return 2
+    if cookie_raw:
+        try:
+            parsed = cookieutil.parse(cookie_raw)
+        except ValueError as e:
+            print(f"[!] cookie 解析失败: {e}", file=sys.stderr)
+            return 2
+
+        added, skipped = 0, 0
+        errors = []
+        # 直接给的 refresh_token：验证可用后入池
+        for rt in parsed["refresh_tokens"]:
+            if rt in tokens:
+                skipped += 1
+                continue
+            try:
+                GuardianClient(rt).quota()
+                tokens.append(rt)
+                added += 1
+            except Exception as e:
+                errors.append(f"refresh_token {rt[:8]}…: {e}")
+
+        # sessionToken → refresh_token → 入池
+        if parsed["session_tokens"]:
+            bootstrap = _bootstrap()
+            for st in parsed["session_tokens"]:
+                try:
+                    rt = bootstrap(session_token=st)["refresh_token"]
+                    if rt in tokens:
+                        skipped += 1
+                        continue
+                    tokens.append(rt)
+                    added += 1
+                except Exception as e:
+                    errors.append(f"sessionToken {st[:8]}…: {e}")
+
+        if not added:
+            print(f"[!] 没有导入任何账号", file=sys.stderr)
+            for e in errors:
+                print(f"    - {e}", file=sys.stderr)
+            return 1
+        cfg["refresh_tokens"] = tokens
+        if args.country:
+            cfg["country"] = args.country.upper()
+        path = cfgmod.save(cfg, args.config)
+        print(f"[+] 从 cookie 导入 {added} 个账号，跳过 {skipped} 个重复；当前共 {len(tokens)} 个")
+        for e in errors:
+            print(f"    [!] {e}")
+        print(f"[+] 凭证已保存到 {path}")
+        return 0
+
     session_token = args.session_token
     email = args.email
     password = args.password
     if not session_token and email and not password:
         password = getpass.getpass("FxA password: ")
     if not session_token and not email:
-        print("provide --session-token, or --email (+ --password)", file=sys.stderr)
+        print("provide --cookie / --session-token, or --email (+ --password)", file=sys.stderr)
         return 2
 
     print("[*] bootstrapping credentials ...", flush=True)
     res = _bootstrap()(session_token=session_token, email=email, password=password)
-    cfg = cfgmod.load(args.config)
     rt = res["refresh_token"]
-    tokens = cfg.get("refresh_tokens") or []
     if getattr(args, "append", False):
         if rt in tokens:
             print(f"[!] 账号已存在，未重复添加 (uid={res['quota']['uid']})")
@@ -195,6 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--email")
     lp.add_argument("--password")
     lp.add_argument("--session-token", help="pre-extracted FxA sessionToken (hex)")
+    lp.add_argument("--cookie", help="browser-exported cookie JSON / header / tokens (from Chrome extension)")
+    lp.add_argument("--cookie-file", help="read --cookie content from a file")
     lp.add_argument("--country", help="default egress country ISO code")
     lp.add_argument("--append", action="store_true",
                     help="追加账号到池（默认覆盖第一个账号）")
@@ -240,7 +305,7 @@ def interactive(config_path=None):
     ns = argparse.Namespace(config=config_path)
     while True:
         print("\n=== fxproxy — Firefox IP Protection 多账号落地代理 ===")
-        print("  1) 登录/入组 (login)   —— 邮箱密码 或 sessionToken → 换凭证并入组")
+        print("  1) 登录/入组 (login)   —— 邮箱密码 / sessionToken / Cookie 插件导出 → 换凭证并入组")
         print("  2) 账号列表 (accounts) —— 各账号 uid / 配额 / 冷却状态")
         print("  3) 聚合配额 (status)")
         print("  4) 列出可用国家 (servers)")
@@ -251,11 +316,25 @@ def interactive(config_path=None):
         choice = input("选择指令 [1-8]: ").strip()
         try:
             if choice == "1":
-                mode = _prompt("凭证方式: 1=邮箱密码  2=sessionToken", "1")
+                mode = _prompt("凭证方式: 1=邮箱密码  2=sessionToken  3=Cookie/插件导出", "1")
                 a = argparse.Namespace(config=config_path, email=None, password=None,
-                                       session_token=None, country=None, append=False)
+                                       session_token=None, country=None, append=False,
+                                       cookie=None, cookie_file=None)
                 if mode == "2":
                     a.session_token = _prompt("粘贴 sessionToken(hex)")
+                elif mode == "3":
+                    print("  在住宅 IP 的 Chrome 登录 accounts.firefox.com，点插件「提取并复制」，")
+                    print("  然后把剪贴板内容粘到下面（空行结束）：")
+                    lines = []
+                    while True:
+                        try:
+                            line = input()
+                        except EOFError:
+                            break
+                        if line == "":
+                            break
+                        lines.append(line)
+                    a.cookie = "\n".join(lines)
                 else:
                     a.email = _prompt("FxA 邮箱")
                     a.password = getpass.getpass("FxA 密码: ")

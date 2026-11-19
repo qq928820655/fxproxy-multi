@@ -34,6 +34,7 @@ from aiohttp.test_utils import TestServer, TestClient
 
 from fxproxy import config as cfgmod
 from fxproxy import guardian
+from fxproxy import webui as webui_mod
 from fxproxy.webui import Panel
 
 PASS = 0
@@ -55,6 +56,13 @@ def fake_quota(self):
 
 async def main():
     guardian.GuardianClient.quota = fake_quota  # 打桩，避免外网
+
+    # cookie 模式的 sessionToken 分支要调 bootstrap，用桩替换掉重型依赖
+    def fake_fxa():
+        def bootstrap(session_token=None, **kw):
+            return {"refresh_token": "r" + session_token[1:]}
+        return types.SimpleNamespace(bootstrap=bootstrap)
+    webui_mod._fxa = fake_fxa
     with tempfile.TemporaryDirectory() as d:
         cfgpath = Path(d) / "config.json"
         cfgpath.write_text(json.dumps({
@@ -119,10 +127,32 @@ async def main():
             check(c["refresh_tokens"] == ["tokB", "tokC"], "导出含全部 token")
             check(c["refresh_token"] == "tokB", "导出含兼容字段")
 
+            print("[api] cookie 模式导入")
+            T1 = "a" * 64
+            R2 = "e" * 64
+            cookie_payload = {"session_tokens": [T1], "accounts": []}
+            r = await cli.post("/api/login", json={"mode": "cookie", "cookie": json.dumps(cookie_payload)})
+            d6 = await r.json()
+            check(d6.get("ok") and d6["added"] == 1, "cookie 模式: sessionToken 换 token 入池")
+            check(("r" + T1[1:]) in panel.pool.tokens, "cookie 模式: bootstrap 出的 token 已入池")
+            check(cfgmod.load(cfgpath)["refresh_tokens"] and ("r" + T1[1:]) in cfgmod.load(cfgpath)["refresh_tokens"], "cookie 模式: 已落盘")
+
+            # 重复导入幂等
+            r = await cli.post("/api/login", json={"mode": "cookie", "cookie": json.dumps(cookie_payload)})
+            d7 = await r.json()
+            check(d7.get("ok") and d7.get("skipped") == 1 and d7["added"] == 0, "cookie 模式: 重复 token 幂等跳过")
+
+            # Cookie 头形式
+            r = await cli.post("/api/login", json={"mode": "cookie", "cookie": f"refresh_token={R2}; x=1"})
+            d8 = await r.json()
+            check(d8.get("ok") and d8["added"] == 1, "cookie 模式: Cookie 头格式导入")
+            check(R2 in panel.pool.tokens, "cookie 模式: refresh token 直接入池")
+
             print("[api] 面板 HTML")
             r = await cli.get("/")
             html = await r.text()
             check("调度策略" in html and "账号池" in html, "面板含多账号 UI")
+            check("cookieData" in html and "Cookie / 插件导出" in html, "面板含 cookie 导入 UI")
 
     print(f"\nALL PASS ({PASS} checks)")
 

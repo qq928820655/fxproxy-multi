@@ -82,6 +82,7 @@ PAGE = """<!doctype html>
       <label>方式</label>
       <select id="loginMode">
         <option value="token">直接粘贴 refresh_token（最稳）</option>
+        <option value="cookie">Cookie / 插件导出（推荐）</option>
         <option value="password">邮箱 + 密码</option>
         <option value="session">sessionToken</option>
       </select>
@@ -95,6 +96,10 @@ PAGE = """<!doctype html>
     </div>
     <div id="stFields" class="row" style="margin-top:10px; display:none;">
       <input id="sessionToken" placeholder="粘贴 sessionToken (hex)" style="width:100%;">
+    </div>
+    <div id="ckFields" style="margin-top:10px; display:none;">
+      <textarea id="cookieData" rows="5" style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px;" placeholder="粘贴 Chrome 插件导出的 JSON，或 sessionToken=xxx Cookie 头，可一次贴多个"></textarea>
+      <div class="muted" style="font-size:12px;margin-top:4px;">住宅 IP 登录 → 点插件「提取并复制」→ 粘贴到这里。支持插件 JSON / Cookie 头 / 多个 token，批量自动入池。</div>
     </div>
     <div class="row" style="margin-top:10px;">
       <button id="loginBtn" class="primary">添加账号</button>
@@ -218,6 +223,7 @@ $("loginMode").onchange = () => {
   $("rtFields").style.display = m === "token" ? "flex" : "none";
   $("pwFields").style.display = m === "password" ? "flex" : "none";
   $("stFields").style.display = m === "session" ? "flex" : "none";
+  $("ckFields").style.display = m === "cookie" ? "block" : "none";
 };
 async function doLogin(body, btn){
   btn.disabled = true; $("loginMsg").textContent = "处理中，请稍候…";
@@ -226,12 +232,13 @@ async function doLogin(body, btn){
   const d = await r.json(); btn.disabled = false;
   $("loginMsg").textContent = d.error ? ("失败："+d.error)
     : ("成功，现有 "+(d.account_count||1)+" 个账号");
-  $("password").value = ""; $("sessionToken").value = ""; $("refreshToken").value = "";
+  $("password").value = ""; $("sessionToken").value = ""; $("refreshToken").value = ""; $("cookieData").value = "";
   await loadState(); await loadAccounts();
 }
 $("loginBtn").onclick = () => doLogin({ mode:$("loginMode").value,
     email:$("email").value, password:$("password").value,
-    session_token:$("sessionToken").value, refresh_token:$("refreshToken").value }, $("loginBtn"));
+    session_token:$("sessionToken").value, refresh_token:$("refreshToken").value,
+    cookie:$("cookieData").value }, $("loginBtn"));
 $("browserBtn").onclick = () => {
   $("loginMsg").textContent = "已请求打开浏览器，请在弹出的窗口里登录（或注册），完成后自动追加 …";
   doLogin({ mode:"browser" }, $("browserBtn"));
@@ -464,6 +471,60 @@ class Panel:
                 gc = GuardianClient(rt)
                 await asyncio.to_thread(gc.quota)  # 先验证可用
                 res = {"refresh_token": rt}
+            elif mode == "cookie":
+                # 插件导出 / Cookie 头 / 多个 token —— 逐个换 refresh_token 入池
+                from . import cookieutil
+                parsed = cookieutil.parse(body.get("cookie") or "")
+                if self.pool is None:
+                    self.pool = self._make_pool() or TokenPool(
+                        [], cooldown=self.cfg.get("cooldown_seconds", 300),
+                        quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60))
+                added, skipped, errors = 0, 0, []
+                # 已入池的 refresh_token 直接跳过
+                existing = set(self.pool.tokens)
+
+                def _ingest(rt):
+                    if rt in existing:
+                        return "skip"
+                    gc = GuardianClient(rt)
+                    gc.quota()  # 已在 worker 线程内，直接同步调用验证
+                    existing.add(rt)
+                    self.pool.add(rt)
+                    return "add"
+
+                # 直接给的 refresh_token：验证后入池
+                for rt in parsed["refresh_tokens"]:
+                    try:
+                        r = await asyncio.to_thread(_ingest, rt)
+                        added += r == "add"; skipped += r == "skip"
+                    except Exception as e:
+                        errors.append(f"refresh_token {rt[:8]}…: {e}")
+
+                # sessionToken → bootstrap → refresh_token → 入池
+                fxa = None
+                if parsed["session_tokens"]:
+                    fxa = _fxa()
+                for st in parsed["session_tokens"]:
+                    try:
+                        tok = await asyncio.to_thread(fxa.bootstrap, session_token=st)
+                        rt = tok["refresh_token"]
+                        r = await asyncio.to_thread(_ingest, rt)
+                        added += r == "add"; skipped += r == "skip"
+                    except Exception as e:
+                        errors.append(f"sessionToken {st[:8]}…: {e}")
+
+                await asyncio.to_thread(self._persist)
+                total = len(self.pool.clients)
+                if not added and not skipped:
+                    msg = "没有成功导入任何账号"
+                    if errors:
+                        msg += "：" + "; ".join(errors[:3])
+                    return web.json_response({"error": msg})
+                out = {"ok": True, "added": added, "skipped": skipped,
+                       "account_count": total}
+                if errors:
+                    out["warnings"] = errors[:5]
+                return web.json_response(out)
             elif mode in ("browser", "session", "password"):
                 fxa = _fxa()  # 只在这三种登录模式才拉起重型依赖
                 if mode == "browser":
