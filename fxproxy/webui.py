@@ -1763,7 +1763,7 @@ class Panel:
                         "    smux:\n"
                         "      enabled: true\n"
                         "      protocol: smux\n"
-                        "      max-streams: 16\n"
+                        "      max-streams: 4\n"
                     )
             else:
                 per_node.append(
@@ -1781,7 +1781,7 @@ class Panel:
                     "    smux:\n"
                     "      enabled: true\n"
                     "      protocol: smux\n"
-                    "      max-streams: 16\n"
+                    "      max-streams: 4\n"
                 )
             block = "".join(per_node) + "\n"
             marker = "proxy-groups:"
