@@ -567,7 +567,11 @@ class Panel:
                     out["warnings"] = errors[:5]
                 return web.json_response(out)
             elif mode in ("browser", "session", "password"):
-                fxa = _fxa()  # 只在这三种登录模式才拉起重型依赖
+                try:
+                    fxa = _fxa()  # 只在这三种登录模式才拉起重型依赖
+                except Exception as e:
+                    return web.json_response({
+                        "error": f"登录依赖未安装（需先 pip install '.[login]'）：{e}"})
                 if mode == "browser":
                     st = await asyncio.to_thread(fxa.browser_login)
                     res = await asyncio.to_thread(fxa.bootstrap, session_token=st)

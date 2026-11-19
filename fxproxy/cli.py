@@ -42,11 +42,19 @@ def _pool(args) -> TokenPool:
     )
 
 
+def _merge_tokens(old: list, incoming: list, append: bool) -> list:
+    """--append 追加到池尾；默认覆盖第一个账号、保留其余并去重。"""
+    if append:
+        return old + [t for t in incoming if t not in old]
+    return incoming + [t for t in old[1:] if t not in incoming]
+
+
 def cmd_login(args):
     from . import cookieutil
 
     cfg = cfgmod.load(args.config)
     tokens = cfg.get("refresh_tokens") or []
+    append = getattr(args, "append", False)
 
     # Cookie / 插件导出路径：可能一次导入多个账号
     cookie_raw = getattr(args, "cookie", None)
@@ -58,6 +66,9 @@ def cmd_login(args):
         except OSError as e:
             print(f"[!] 读取 cookie 文件失败: {e}", file=sys.stderr)
             return 2
+        if not (cookie_raw or "").strip():
+            print(f"[!] cookie 文件为空: {cookie_file}", file=sys.stderr)
+            return 2
     if cookie_raw:
         try:
             parsed = cookieutil.parse(cookie_raw)
@@ -66,38 +77,52 @@ def cmd_login(args):
             return 2
 
         added, skipped = 0, 0
-        errors = []
-        # 直接给的 refresh_token：验证可用后入池
-        for rt in parsed["refresh_tokens"]:
-            if rt in tokens:
+        errors, new_tokens = [], []
+
+        def _take(rt, label):
+            """先验证再收入，重复计入 skipped（空池也能验，不依赖 TokenPool）。"""
+            nonlocal added, skipped
+            if rt in tokens or rt in new_tokens:
                 skipped += 1
-                continue
+                return
             try:
                 GuardianClient(rt).quota()
-                tokens.append(rt)
-                added += 1
             except Exception as e:
-                errors.append(f"refresh_token {rt[:8]}…: {e}")
+                errors.append(f"{label} {str(rt)[:8]}…: {e}")
+                return
+            new_tokens.append(rt)
+            added += 1
 
-        # sessionToken → refresh_token → 入池
+        # 直接给的 refresh_token：验证后入池
+        for rt in parsed["refresh_tokens"]:
+            _take(rt, "refresh_token")
+
+        # sessionToken → bootstrap → refresh_token → 入池
         if parsed["session_tokens"]:
-            bootstrap = _bootstrap()
-            for st in parsed["session_tokens"]:
-                try:
-                    rt = bootstrap(session_token=st)["refresh_token"]
-                    if rt in tokens:
-                        skipped += 1
-                        continue
-                    tokens.append(rt)
-                    added += 1
-                except Exception as e:
-                    errors.append(f"sessionToken {st[:8]}…: {e}")
+            try:
+                bootstrap = _bootstrap()
+            except Exception as e:
+                # 依赖缺失不能吞掉已经验证通过的 refresh_token
+                errors.append(f"登录依赖未安装（需 pip install '.[login]'）：{e}")
+            else:
+                for st in parsed["session_tokens"]:
+                    try:
+                        rt = bootstrap(session_token=st)["refresh_token"]
+                        _take(rt, "sessionToken")
+                    except Exception as e:
+                        errors.append(f"sessionToken {st[:8]}…: {e}")
 
-        if not added:
-            print(f"[!] 没有导入任何账号", file=sys.stderr)
+        if not added and not skipped:
+            print("[!] 没有导入任何账号", file=sys.stderr)
             for e in errors:
                 print(f"    - {e}", file=sys.stderr)
             return 1
+        if not added:
+            # 全部重复：幂等成功，不改动配置
+            print(f"[+] 账号已存在，未重复添加（当前共 {len(tokens)} 个）")
+            return 0
+
+        tokens = _merge_tokens(tokens, new_tokens, append)
         cfg["refresh_tokens"] = tokens
         if args.country:
             cfg["country"] = args.country.upper()
@@ -118,18 +143,18 @@ def cmd_login(args):
         return 2
 
     print("[*] bootstrapping credentials ...", flush=True)
-    res = _bootstrap()(session_token=session_token, email=email, password=password)
+    try:
+        res = _bootstrap()(session_token=session_token, email=email, password=password)
+    except Exception as e:
+        print(f"[!] 登录失败: {e}", file=sys.stderr)
+        print("    sessionToken / 邮箱登录需 pip install '.[login]'", file=sys.stderr)
+        return 1
     rt = res["refresh_token"]
-    if getattr(args, "append", False):
-        if rt in tokens:
-            print(f"[!] 账号已存在，未重复添加 (uid={res['quota']['uid']})")
-            return 1
-        tokens.append(rt)
-        action = "已追加账号"
-    else:
-        if rt not in tokens:
-            tokens.insert(0, rt)
-        action = "已保存凭证"
+    if append and rt in tokens:
+        print(f"[!] 账号已存在，未重复添加 (uid={res['quota']['uid']})")
+        return 1
+    tokens = _merge_tokens(tokens, [rt], append)
+    action = "已追加账号" if append else "已保存凭证（覆盖第一个账号）"
     cfg["refresh_tokens"] = tokens
     if args.country:
         cfg["country"] = args.country.upper()
