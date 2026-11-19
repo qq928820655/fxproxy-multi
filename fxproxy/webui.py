@@ -1388,7 +1388,10 @@ class Panel:
                 target = _s.inet_ntoa(await _need(4))
             elif atyp == 2:
                 ln = (await _need(1))[0]
-                target = (await _need(ln)).decode("idna")
+                # 域名在 vless 线上是 ASCII（punycode 已由客户端转换）。
+                # 不能用 decode("idna")：它对含下划线/非标准 label 的真实
+                # 域名会抛 UnicodeError，导致大量正常请求被断连。
+                target = (await _need(ln)).decode("ascii", "replace")
             elif atyp == 3:
                 import socket as _s
                 target = _s.inet_ntop(_s.AF_INET6, await _need(16))
@@ -1406,7 +1409,14 @@ class Panel:
             return ws
 
         # vless response header: version 0, no addons
-        await ws.send_bytes(b"\x00\x00")
+        try:
+            await ws.send_bytes(b"\x00\x00")
+        except Exception:
+            try:
+                writer.close()
+            except Exception:
+                pass
+            return ws
 
         async def _w2t():
             nonlocal buf
@@ -1433,9 +1443,18 @@ class Panel:
             except Exception:
                 pass
 
+        # 任一方向结束就收尾：目标站常用 Connection: close 主动断开，
+        # 若此时仍等 _w2t 的 WS 消息会永久挂住，客户端拿不到关闭信号而
+        # 卡死（测速短连接不暴露，真实浏览大量触发）。
+        t_up = asyncio.create_task(_w2t())
+        t_down = asyncio.create_task(_t2w())
         try:
-            await asyncio.gather(_w2t(), _t2w())
+            await asyncio.wait({t_up, t_down},
+                               return_when=asyncio.FIRST_COMPLETED)
         finally:
+            for t in (t_up, t_down):
+                if not t.done():
+                    t.cancel()
             try:
                 writer.close()
             except Exception:
