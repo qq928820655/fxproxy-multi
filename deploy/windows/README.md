@@ -43,7 +43,8 @@ Windows 用上面的 `bootstrap.ps1` 或 `install.bat`。
 3. `pip install -e .`（代理只要 `requests` + `aiohttp`）
 4. 可选：装 `pyfxa` + `curl_cffi`（只有「用 sessionToken 换 refresh_token」才需要，失败不影响用）
 5. 写 `config.json`（端口、国家、账号）
-6. 起两个后台进程：`fxproxy run`（代理）+ `fxproxy web`（面板），PID 写进 `.run\`
+6. 起两个后台进程：`fxproxy run`（代理）+ `fxproxy web`（面板），PID 写进 `.run\`；
+   都用 `pythonw.exe -m fxproxy` 拉起来，**不带控制台窗口**（详见下面「开机自启」）
 
 ## 参数
 
@@ -56,7 +57,7 @@ install.bat -Country JP -HttpPort 8081 -SocksPort 1081 -WebPort 8766
 install.bat -CookieFile D:\export.json        :: 直接吃插件导出文件（不交互问凭证）
 install.bat -SkipLogin                        :: 先不导凭证，稍后在面板加
 install.bat -NoStart                          :: 只装不起
-install.bat -Autostart                        :: 注册登录自启（schtasks，用户级，无需管理员）
+install.bat -Autostart                        :: 注册开机/登录自启（静默，无命令行窗口）
 install.bat -Shortcut                         :: 桌面建「fxproxy 启动」快捷方式（双击=起服务+开面板）
 install.bat -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple   :: 走国内镜像
 install.bat -Proxy http://127.0.0.1:7890          :: pip 走指定代理（系统代理配错时用）
@@ -69,11 +70,19 @@ install.bat -Uninstall                        :: 停进程 + 删 venv/.run/计�
 
 ## 起停
 
+装完项目根目录会出现三个双击即用的脚本（`deploy\windows` 下也有一份）：
+
 ```bat
-start.bat      :: 启动并打开面板
-stop.bat       :: 全部停掉
-status.bat     :: 进程 / 端口 / 额度 / 日志末尾
+一键启动.bat    :: 起代理 + 面板，然后打开面板；跑完按任意键关窗口，服务留在后台
+一键停止.bat    :: 两个进程全停；跑完按任意键关窗口
+一键状态.bat    :: 常驻刷新（每 3 秒）：进程 / 端口 / 面板地址 / 日志末尾
 ```
+
+- 启动和停止是**一次性**动作，按任意键就关窗口，**关了不影响已经起来的服务**。
+- 状态是**只读**的实时视图，放着不管就一直刷；关窗口或 `Ctrl+C` 都不会影响后台服务
+  （它只查进程和端口）。
+- 服务本身跑在 `pythonw.exe` 上（GUI 子系统），**不会留下任何命令行窗口**，
+  任务栏也看不到黑框；想确认在跑就开「一键状态」。
 
 对应的 PowerShell（想接进别的脚本时用）：
 
@@ -81,8 +90,24 @@ status.bat     :: 进程 / 端口 / 额度 / 日志末尾
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\ctl.ps1 start
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\ctl.ps1 stop
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\ctl.ps1 status
+powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\ctl.ps1 status -Watch -Interval 3
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\ctl.ps1 restart
 ```
+
+`status -Deep` 才会联网查账号额度（慢），`-Watch` 模式下默认不查，避免每 3 秒打一次接口。
+
+## 开机自启（无窗口）
+
+`install.bat -Autostart` 会做两件事：
+
+1. 生成 `deploy\windows\silent-start.vbs` —— 用 `WScript.Shell.Run(..., 0, False)`
+   拉起 `ctl.ps1 start`，窗口样式 0 = 隐藏，所以登录时不会闪黑框；
+2. 先试 `schtasks` 注册计划任务 `fxproxy-autostart`（任务计划程序里能看到、能禁用）；
+   被组策略或安全软件拦下时，自动把同一个 vbs 复制进
+   `shell:startup`（`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`），效果一样。
+
+取消自启：任务计划程序里删掉 `fxproxy-autostart`，或删掉启动文件夹里的
+`fxproxy-autostart.vbs`。
 
 ## 装完得到什么
 
@@ -94,7 +119,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy\windows\ctl.ps1 resta
 | Clash/Mihomo 订阅 | `http://127.0.0.1:8765/clash.yaml` |
 
 端口都能换：装的时候用 `-HttpPort / -SocksPort / -WebPort`，装完也可以直接在面板
-「② 运行状态 → 端口」里改（运行中会按新端口自动重启，订阅同步跟着变）。
+「系统设置 → 端口」里改（运行中会按新端口自动重启，订阅同步跟着变）。
+本机这一份装的是**面板 5566 / HTTP 8760 / SOCKS5 1008**，对应的订阅是
+`http://127.0.0.1:5566/clash.yaml`。
 
 订阅给本机客户端用；局域网里别的机器要连，得把 `config.json` 的 `host` 改成 `0.0.0.0`，
 并把 `sub_server` 填成本机局域网 IP（否则订阅里是 `127.0.0.1`，客户端连自己）。

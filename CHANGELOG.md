@@ -3,6 +3,37 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 上游基线：`c4ba254`（ios151/firefox）。
 
+## [0.4.4] — 2026-11-19
+
+### 新增
+
+- **三个一键脚本**（项目根目录 + `deploy\windows\` 各一份）：
+  `一键启动.bat` / `一键停止.bat` / `一键状态.bat`。启动和停止跑完按任意键关窗口，
+  **关窗口不影响已经起来的服务**。
+- **状态窗口可以常驻**：`一键状态.bat` 每 3 秒刷新一次进程 / 端口 / 面板地址 / 日志末尾，
+  关窗口或 `Ctrl+C` 都只是退出这个视图，服务照跑（它只读，不发任何控制指令）。
+  脚本侧对应 `ctl.ps1 status -Watch -Interval 3`，加 `-Deep` 才联网查额度。
+- **服务进程彻底无窗口**：改用 `pythonw.exe -m fxproxy`（GUI 子系统）拉起代理和面板。
+  之前跑 `fxproxy.exe`（console 子系统），`-WindowStyle Hidden` 只是把窗口藏起来，
+  任务栏照样有黑框。
+
+### 修复
+
+- **`-Autostart` 从来没生效过**：计划任务指向的是 `deploy\windows\ctl.bat`，
+  而仓库里根本没有这个文件，登录时执行一个不存在的路径必然失败。
+  现在生成 `silent-start.vbs`（`WScript.Shell.Run(..., 0, False)`，隐藏且不等待），
+  先试 `schtasks` 注册计划任务，被组策略或安全软件拦下就自动回退到启动文件夹
+  `shell:startup`。
+- **安装卡在「3/5 安装依赖」**：pip 会往 stderr 打警告（setuptools 的
+  `Editable installation` 提示就是一条），脚本的 `$ErrorActionPreference = "Stop"`
+  把它当终止错误，包还没装完就中断，报出来的却是看不懂的 `NativeCommandError`。
+  现在调用 pip 时局部放开错误策略，失败时把输出末尾 8 行打出来。
+- **`Start-Process -ArgumentList` 遇空格路径会被拆**：装在 `C:\Program Files\...`
+  下时配置路径会被切成两个参数。改成自己按需加引号再拼。
+- **停止时抓不到真正监听端口的进程**：venv 的 `pythonw.exe` 是 launcher stub，
+  它会再拉起一个解释器进程，PID 文件里记的是外层那个。停完现在会等 600ms
+  再按命令行扫一遍 `python*` / `fxproxy.exe` 残留。
+
 ## [0.4.3] — 2026-11-19
 
 ### 新增（合并上游）

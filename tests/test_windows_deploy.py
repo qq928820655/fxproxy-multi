@@ -118,6 +118,39 @@ def main():
     check("start.bat" in ins, "快捷方式指向 start.bat")
     check(".PARAMETER Shortcut" in ins, "帮助里有 -Shortcut 说明")
 
+    print("\n[win] 无窗口后台 + 一键三件套")
+    for name in ("一键启动.bat", "一键停止.bat", "一键状态.bat"):
+        check((WD / name).is_file(), f"{name} 存在（项目根目录也会放一份）")
+    one_status = (WD / "一键状态.bat").read_text(encoding="ascii")
+    check("-Watch" in one_status, "一键状态.bat 走常驻刷新")
+    one_start = (WD / "一键启动.bat").read_text(encoding="ascii")
+    check("start -Open" in one_start, "一键启动.bat 调 ctl.ps1 start -Open")
+    one_stop = (WD / "一键停止.bat").read_text(encoding="ascii")
+    check("stop" in one_stop, "一键停止.bat 调 ctl.ps1 stop")
+    for b in (one_start, one_stop, one_status):
+        check("pause" in b, "一键脚本跑完等按键")
+
+    # 服务进程必须无控制台：console 的 fxproxy.exe 即使 Hidden 也附着控制台，
+    # 只有 pythonw.exe 才彻底没有窗口。
+    check("pythonw.exe" in ctl, "ctl.ps1 用 pythonw.exe 起服务（无控制台窗口）")
+    check("-m\", \"fxproxy\"" in ctl or '"-m", "fxproxy"' in ctl,
+          "用 -m fxproxy 而不是 console 脚本")
+    check("[switch]$Watch" in ctl, "ctl.ps1 支持 -Watch 常驻状态")
+    check("[int]$Interval" in ctl, "刷新间隔可配")
+    check("Render-Status" in ctl, "状态渲染抽成函数，Watch 复用")
+    check("Clear-Host" in ctl, "Watch 模式每轮清屏")
+    check("不影响后台服务" in ctl, "退出状态窗口时提示服务仍在跑")
+
+    print("\n[win] 开机自启无窗口")
+    check("silent-start.vbs" in ins, "install.ps1 生成隐藏启动器 vbs")
+    check("WScript.Shell" in ins and ", 0, False" in ins,
+          "vbs 用 Run(..., 0, False) 隐藏窗口且不等待")
+    check("Environment]::GetFolderPath(\"Startup\")" in ins,
+          "计划任务失败时回退启动文件夹")
+    check("GetFolderPath(\"Startup\")" not in ins or "fxproxy-autostart.vbs" in ins,
+          "启动文件夹里的文件名固定")
+    check("ctl.bat" not in ins, "不再引用不存在的 ctl.bat")
+
     print("\n[win] 在线部署（Windows 版 curl|bash）")
     # PowerShell 的裸 curl 是 Invoke-WebRequest 别名，-fsSL 会直接报
     # 「找不到与参数名称 fsSL 匹配的参数」；下载必须显式 curl.exe。
