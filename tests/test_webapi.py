@@ -164,6 +164,56 @@ async def main():
             check("127.0.0.1" in y and "port: 8080" in y, "订阅节点指向本地代理端口")
             check(r.headers.get("Content-Type", "").startswith("text/yaml"), "订阅 Content-Type 正确")
 
+    # 回归：全新安装（账号池为空）时 cookie 导入不能抛 TokenPool 空列表错误
+    print("[api] 空账号池首次 cookie 导入（回归）")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "empty.json"
+        cfgpath.write_text(json.dumps({}), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        check(panel.pool is None, "空配置: 初始账号池为 None")
+        app = web.Application()
+        app.add_routes([
+            web.post("/api/login", panel.api_login),
+            web.get("/api/state", panel.api_state),
+        ])
+        async with TestClient(TestServer(app)) as cli:
+            r = await cli.post("/api/login", json={"mode": "cookie", "cookie": "   "})
+            d0 = await r.json()
+            check("请粘贴凭证文本" in d0.get("error", ""), "空凭证: 友好错误而非崩溃")
+
+            R = "f" * 64
+            r = await cli.post("/api/login", json={
+                "mode": "cookie", "cookie": f"refresh_token={R}"})
+            d1 = await r.json()
+            check(d1.get("ok") and d1.get("added") == 1 and d1["account_count"] == 1,
+                  "空池首次导入: refresh_token 成功建池")
+            check(panel.pool is not None and R in panel.pool.tokens,
+                  "空池首次导入: token 已在池中")
+            check(cfgmod.load(cfgpath)["refresh_tokens"] == [R],
+                  "空池首次导入: 已落盘")
+            r = await cli.get("/api/state")
+            s = await r.json()
+            check(s["authed"] and s["account_count"] == 1,
+                  "空池首次导入: 状态变为已登录")
+
+    print("[api] 空账号池首次 sessionToken 导入（回归）")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "empty2.json"
+        cfgpath.write_text(json.dumps({}), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        app = web.Application()
+        app.add_routes([web.post("/api/login", panel.api_login)])
+        async with TestClient(TestServer(app)) as cli:
+            T = "c" * 64
+            r = await cli.post("/api/login", json={
+                "mode": "cookie",
+                "cookie": json.dumps({"session_tokens": [T], "accounts": []})})
+            d2 = await r.json()
+            check(d2.get("ok") and d2.get("added") == 1,
+                  "空池首次导入: sessionToken 经 bootstrap 成功")
+            check(panel.pool is not None and ("r" + T[1:]) in panel.pool.tokens,
+                  "空池首次导入: bootstrap 出的 token 已入池")
+
     print(f"\nALL PASS ({PASS} checks)")
 
 

@@ -488,56 +488,81 @@ class Panel:
                 await asyncio.to_thread(gc.quota)  # 先验证可用
                 res = {"refresh_token": rt}
             elif mode == "cookie":
-                # 插件导出 / Cookie 头 / 多个 token —— 逐个换 refresh_token 入池
+                # 插件导出 / Cookie 头 / 多个 token —— 先全部验证，再一次入池。
+                # 关键：首次导入时账号池为空，绝不能提前构造空 TokenPool。
                 from . import cookieutil
-                parsed = cookieutil.parse(body.get("cookie") or "")
-                if self.pool is None:
-                    self.pool = self._make_pool() or TokenPool(
-                        [], cooldown=self.cfg.get("cooldown_seconds", 300),
-                        quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60))
-                added, skipped, errors = 0, 0, []
-                # 已入池的 refresh_token 直接跳过
-                existing = set(self.pool.tokens)
+                raw = body.get("cookie") or ""
+                if not str(raw).strip():
+                    return web.json_response({"error": "请粘贴凭证文本"})
+                try:
+                    parsed = cookieutil.parse(raw)
+                except Exception as e:
+                    return web.json_response({"error": f"凭证格式无法识别：{e}"})
 
-                def _ingest(rt):
-                    if rt in existing:
-                        return "skip"
-                    gc = GuardianClient(rt)
-                    gc.quota()  # 已在 worker 线程内，直接同步调用验证
-                    existing.add(rt)
-                    self.pool.add(rt)
-                    return "add"
+                existing = set(self.pool.tokens) if self.pool is not None else set()
+                new_tokens: list[str] = []
+                added, skipped, errors = 0, 0, []
+
+                def _verify(rt):
+                    # 在 worker 线程内同步验证，不阻塞事件循环
+                    GuardianClient(rt).quota()
+                    return rt
+
+                async def _take(rt, label):
+                    nonlocal added, skipped
+                    if rt in existing or rt in new_tokens:
+                        skipped += 1
+                        return
+                    try:
+                        await asyncio.to_thread(_verify, rt)
+                    except Exception as e:
+                        errors.append(f"{label} {str(rt)[:8]}…: {e}")
+                        return
+                    new_tokens.append(rt)
+                    added += 1
 
                 # 直接给的 refresh_token：验证后入池
                 for rt in parsed["refresh_tokens"]:
-                    try:
-                        r = await asyncio.to_thread(_ingest, rt)
-                        added += r == "add"; skipped += r == "skip"
-                    except Exception as e:
-                        errors.append(f"refresh_token {rt[:8]}…: {e}")
+                    await _take(rt, "refresh_token")
 
                 # sessionToken → bootstrap → refresh_token → 入池
-                fxa = None
                 if parsed["session_tokens"]:
-                    fxa = _fxa()
-                for st in parsed["session_tokens"]:
                     try:
-                        tok = await asyncio.to_thread(fxa.bootstrap, session_token=st)
-                        rt = tok["refresh_token"]
-                        r = await asyncio.to_thread(_ingest, rt)
-                        added += r == "add"; skipped += r == "skip"
+                        fxa = _fxa()
                     except Exception as e:
-                        errors.append(f"sessionToken {st[:8]}…: {e}")
+                        errors.append(f"登录依赖未安装（需先 pip install '.[login]'）：{e}")
+                    else:
+                        for st in parsed["session_tokens"]:
+                            try:
+                                tok = await asyncio.to_thread(
+                                    fxa.bootstrap, session_token=st)
+                                await _take(tok["refresh_token"], "sessionToken")
+                            except Exception as e:
+                                errors.append(f"sessionToken {st[:8]}…: {e}")
 
-                await asyncio.to_thread(self._persist)
-                total = len(self.pool.clients)
                 if not added and not skipped:
                     msg = "没有成功导入任何账号"
                     if errors:
                         msg += "：" + "; ".join(errors[:3])
                     return web.json_response({"error": msg})
+
+                if self.pool is None:
+                    # 全部验证通过后才建池，避免用空 token 列表触发 ValueError
+                    self.pool = TokenPool(
+                        new_tokens,
+                        strategy=self.cfg.get("pool_strategy", "round-robin"),
+                        cooldown=self.cfg.get("cooldown_seconds", 300),
+                        quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60),
+                    )
+                else:
+                    for rt in new_tokens:
+                        try:
+                            self.pool.add(rt)
+                        except ValueError:
+                            pass  # 并发下重复：幂等忽略
+                await asyncio.to_thread(self._persist)
                 out = {"ok": True, "added": added, "skipped": skipped,
-                       "account_count": total}
+                       "account_count": len(self.pool.clients)}
                 if errors:
                     out["warnings"] = errors[:5]
                 return web.json_response(out)
