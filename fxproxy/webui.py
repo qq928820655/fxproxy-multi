@@ -1468,9 +1468,15 @@ class Panel:
         accounts = []
         for i in sel:
             c = self.pool.clients[i]
+            email = getattr(c, "_email", None)
+            if email is None:
+                try:
+                    email = await asyncio.to_thread(c.email)
+                except Exception:
+                    email = None
             accounts.append({
                 "uid": getattr(c, "_uid", None),
-                "email": getattr(c, "_email", None),
+                "email": email,
                 "refresh_token": c.refresh_token,
             })
         if mode == "token":
