@@ -286,6 +286,11 @@ PAGE = r"""<!doctype html>
       <button id="refreshQuotaBtn" class="sm">刷新配额</button>
       <button id="addToggle" class="primary sm">+ 添加账号</button>
     </div>
+    <div class="row" style="margin-bottom:12px;">
+      <label>出口强制 IPv4</label>
+      <input type="checkbox" id="forceIpv4">
+      <span class="muted" style="font-size:12px;">域名先在本机解析为 IPv4 再连目标，出口 IP 走 IPv4；纯 IPv6 站点会连不上</span>
+    </div>
     <table>
       <thead><tr><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
       <tbody id="acctBody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
@@ -555,6 +560,7 @@ async function loadState(){
   else egress = s.running ? ("出口："+(s.country||"任意")) : "";
   $("listen").textContent = s.running ? egress : "";
   $("strategy").value = s.strategy || "round-robin";
+  $("forceIpv4").checked = !!s.force_ipv4_egress;
   $("acctCount").textContent = "("+(s.account_count||0)+" 个)";
   if(s.version){ $("verNow").textContent = "v"+s.version; $("verNow").className = "pill on"; }
   if(!userPicked && s.running && s.country){ $("country").value = s.country; updateNodeWarn(); }
@@ -642,6 +648,14 @@ $("refreshQuotaBtn").onclick = async () => {
   $("refreshQuotaBtn").disabled = true;
   await fetch("/api/accounts/refresh",{method:"POST"});
   await loadAccounts(); $("refreshQuotaBtn").disabled = false;
+};
+$("forceIpv4").onchange = async () => {
+  const r = await fetch("/api/force-ipv4",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({enabled:$("forceIpv4").checked})});
+  const d = await r.json();
+  if(d.error) alert("设置失败："+d.error);
+  await loadState();
 };
 $("country").onchange = () => { userPicked = true; updateNodeWarn(); };
 $("startBtn").onclick = async () => {
@@ -896,6 +910,7 @@ class Panel:
             "host": self.cfg.get("host", "127.0.0.1"),
             "http_port": self.cfg.get("http_port", 8080),
             "socks_port": self.cfg.get("socks_port", 1080),
+            "force_ipv4_egress": bool(self.cfg.get("force_ipv4_egress", False)),
             "web_port": self.web_port,
             "version": _updater().VERSION,
             "platform": _updater().platform_tag(),
@@ -1089,6 +1104,24 @@ class Panel:
         except Exception as e:
             return web.json_response({"error": str(e)})
 
+    async def api_force_ipv4(self, req):
+        """Toggle egress IPv4 forcing. Persists to config and hot-applies to
+        any running ProxyServer instances (panel proxy, speedtest, vless bench)."""
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled"))
+        self.cfg["force_ipv4_egress"] = enabled
+        try:
+            cfgmod.save(self.cfg, self.config_path)
+        except Exception as e:
+            return web.json_response({"error": str(e)})
+        for s in (self.srv, self._st_srv, self._bench):
+            if s is not None:
+                s.force_ipv4_egress = enabled
+        return web.json_response({"ok": True, "force_ipv4_egress": enabled})
+
     async def api_servers(self, req):
         # 服务器列表是 Mozilla 公开接口，不需要账号凭证；无账号时也要能列节点。
         # 用临时 client 拉取，避免依赖 self.pool 存在。
@@ -1214,6 +1247,7 @@ class Panel:
                 http_port=self.cfg.get("http_port", 8080),
                 socks_port=self.cfg.get("socks_port", 1080),
                 failover=self.cfg.get("failover", 3),
+                force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
             )
             await srv.start()
             self.srv = srv
@@ -1243,6 +1277,7 @@ class Panel:
                     self.pool, picker,
                     host="127.0.0.1", http_port=st_port, socks_port=_st_socks,
                     failover=1,
+                    force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
                 )
                 await srv.start()
                 self._st_srv = srv
@@ -1360,6 +1395,7 @@ class Panel:
                 self.pool, picker,
                 host=host, http_port=http_port, socks_port=socks_port,
                 failover=self.cfg.get("failover", 3),
+                force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
             )
             await srv.start()
             self.srv = srv
@@ -1693,7 +1729,8 @@ class Panel:
             raise web.HTTPServiceUnavailable(text="no account in pool")
         if self._bench is None:
             self._bench = ProxyServer(
-                self.pool, NodePicker(self.pool.clients[0], None), failover=1)
+                self.pool, NodePicker(self.pool.clients[0], None), failover=1,
+                force_ipv4_egress=self.cfg.get("force_ipv4_egress", False))
             self._preconn = Panel._PreconnPool(self._bench._ssl)
         bench = self._bench
         accounts = self.pool.pick_many(len(self.pool.clients))
@@ -2338,6 +2375,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/accounts/refresh", panel.api_accounts_refresh),
         web.post("/api/account/remove", panel.api_account_remove),
         web.post("/api/strategy", panel.api_strategy),
+        web.post("/api/force-ipv4", panel.api_force_ipv4),
         web.get("/api/servers", panel.api_servers),
         web.get("/api/nodes", panel.api_nodes),
         web.post("/api/speedtest", panel.api_speedtest),

@@ -246,11 +246,33 @@ def test_port_helpers():
           "测速端口确实空闲（不再写死 8095/8096）")
 
 
+def test_force_ipv4_egress():
+    print("[ipv4] 出口强制 IPv4")
+    import asyncio
+    from fxproxy.proxyserver import ProxyServer
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.json"
+        p.write_text('{"refresh_token":"T"}', encoding="utf-8")
+        check(cfgmod.load(p).get("force_ipv4_egress") is False, "默认关闭")
+        os.environ["FXPROXY_FORCE_IPV4_EGRESS"] = "true"
+        try:
+            check(cfgmod.load(p).get("force_ipv4_egress") is True, "环境变量可开启")
+        finally:
+            os.environ.pop("FXPROXY_FORCE_IPV4_EGRESS", None)
+    check(ProxyServer._is_ip_literal("1.2.3.4"), "识别 IPv4 字面量")
+    check(ProxyServer._is_ip_literal("::1"), "识别 IPv6 字面量")
+    check(not ProxyServer._is_ip_literal("example.com"), "域名不是字面量")
+    inst = object.__new__(ProxyServer)
+    ip = asyncio.run(inst._resolve_ipv4("localhost"))
+    check(ip.count(".") == 3, f"localhost 解析为 IPv4（{ip}）")
+
+
 if __name__ == "__main__":
     test_config_migration()
     test_env_deployment_overrides()
     test_subscription_uses_public_entry()
     test_port_helpers()
+    test_force_ipv4_egress()
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()

@@ -282,6 +282,7 @@ def cmd_run(args):
         http_port=http_port,
         socks_port=socks_port,
         failover=getattr(args, "failover", None) or cfg.get("failover", 3),
+        force_ipv4_egress=cfg.get("force_ipv4_egress", False),
     )
     try:
         asyncio.run(srv.serve())

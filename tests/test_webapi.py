@@ -87,6 +87,7 @@ async def main():
             web.post("/api/accounts/refresh", panel.api_accounts_refresh),
             web.post("/api/account/remove", panel.api_account_remove),
             web.post("/api/strategy", panel.api_strategy),
+            web.post("/api/force-ipv4", panel.api_force_ipv4),
             web.post("/api/login", panel.api_login),
             web.get("/api/config", panel.api_config),
             web.get("/api/servers", panel.api_servers),
@@ -163,6 +164,20 @@ async def main():
             check(d1.get("ok") and d1["strategy"] == "quota", "策略切换到 quota")
             check(panel.pool.strategy == "quota", "池策略实际改变")
             check(cfgmod.load(cfgpath)["pool_strategy"] == "quota", "策略已落盘")
+
+            print("[api] force-ipv4 开关")
+            check(cfgmod.load(cfgpath).get("force_ipv4_egress") is False,
+                  "默认出口强制 IPv4 关闭")
+            r = await cli.post("/api/force-ipv4", json={"enabled": True})
+            df = await r.json()
+            check(df.get("ok") and df.get("force_ipv4_egress") is True,
+                  "开启出口强制 IPv4")
+            check(cfgmod.load(cfgpath).get("force_ipv4_egress") is True,
+                  "开关已落盘")
+            stf = await (await cli.get("/api/state")).json()
+            check(stf.get("force_ipv4_egress") is True, "state 暴露开关状态")
+            r = await cli.post("/api/force-ipv4", json={"enabled": False})
+            check((await r.json()).get("force_ipv4_egress") is False, "可再次关闭")
 
             print("[api] login --append 语义")
             r = await cli.post("/api/login", json={"mode": "token", "refresh_token": "tokC"})
@@ -305,10 +320,12 @@ async def main():
 
             class _NewSrv:
                 def __init__(self, pool, picker, host=None, http_port=None,
-                             socks_port=None, failover=3):
+                             socks_port=None, failover=3,
+                             force_ipv4_egress=False):
                     calls.update(host=host, http_port=http_port,
                                  socks_port=socks_port, country=picker.country,
-                                 node=picker.node)
+                                 node=picker.node,
+                                 force_ipv4_egress=force_ipv4_egress)
 
                 async def start(self):
                     calls["started"] = True

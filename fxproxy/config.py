@@ -29,6 +29,10 @@ DEFAULTS = {
     "sub_server": "",             # 空 = 用请求 Host 推导（仅本地/局域网直连用）
     "sub_http_port": 0,           # 0 = 跟随 http_port
     "sub_socks_port": 0,          # 0 = 跟随 socks_port
+    # 出口强制 IPv4：CONNECT 前把目标域名在本机解析成 IPv4，再让 Fastly
+    # 用 IPv4 连接目标，从而让目标站看到的出口 IP 是 IPv4。代价是本机要
+    # 做 DNS 解析，且纯 IPv6 目标会连不上。
+    "force_ipv4_egress": False,
 }
 
 _VALID_STRATEGIES = ("round-robin", "quota", "failover")
@@ -92,6 +96,10 @@ def load(path: Path | None = None) -> dict:
     env_strategy = os.environ.get("FXPROXY_POOL_STRATEGY")
     if env_strategy and env_strategy.strip() in _VALID_STRATEGIES:
         cfg["pool_strategy"] = env_strategy.strip()
+    env_f4 = os.environ.get("FXPROXY_FORCE_IPV4_EGRESS")
+    if env_f4 is not None and env_f4.strip():
+        cfg["force_ipv4_egress"] = env_f4.strip().lower() in (
+            "1", "true", "yes", "on")
 
     # ---- 订阅公网入口（容器/VPS 部署关键）----
     # 优先级：环境变量 > 配置文件 > 默认值；端口回退到实际监听端口。

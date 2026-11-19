@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import ipaddress
 import random
+import socket
 import ssl
 import struct
 from typing import Optional
@@ -110,6 +112,7 @@ class ProxyServer:
         http_port: int = 8080,
         socks_port: int = 1080,
         failover: int = 3,
+        force_ipv4_egress: bool = False,
     ):
         # 兼容旧调用：传单个 GuardianClient 时包成单账号池
         if isinstance(client, TokenPool):
@@ -123,7 +126,31 @@ class ProxyServer:
         self.http_port = http_port
         self.socks_port = socks_port
         self.failover = max(1, failover)
+        self.force_ipv4_egress = bool(force_ipv4_egress)
         self._ssl = ssl.create_default_context()
+
+    # ---- egress address policy ---------------------------------------
+    @staticmethod
+    def _is_ip_literal(host: str) -> bool:
+        try:
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            return False
+
+    async def _resolve_ipv4(self, host: str) -> str:
+        """Resolve ``host`` to its first IPv4 address.
+
+        Used when ``force_ipv4_egress`` is on: CONNECTing an IPv4 literal makes
+        Fastly reach the target over IPv4, so the target sees an IPv4 source IP
+        (the node's IPv4 egress) instead of the node's IPv6 egress.
+        """
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host, None, family=socket.AF_INET, type=socket.SOCK_STREAM
+        )
+        for info in infos:
+            return info[4][0]
+        raise ConnectionError(f"no IPv4 address for {host}")
 
     # ---- upstream tunnel ---------------------------------------------
     async def _connect_one(self, node_host, node_port, target_host, target_port,
@@ -140,6 +167,11 @@ class ProxyServer:
             )
         else:
             reader, writer = conn
+        # 出口强制 IPv4：域名先在本机解析成 IPv4，再 CONNECT IP 字面量。
+        # Fastly 只能用 IPv4 连目标，目标看到的源 IP 就是节点的 IPv4 出口。
+        # 已是 IP 字面量（含 IPv6）时不再改写——无法把 IPv6 目标“转成”IPv4。
+        if self.force_ipv4_egress and not self._is_ip_literal(target_host):
+            target_host = await self._resolve_ipv4(target_host)
         target = f"{target_host}:{target_port}"
         req = (
             f"CONNECT {target} HTTP/1.1\r\n"
