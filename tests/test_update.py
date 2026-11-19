@@ -408,6 +408,51 @@ async def test_network():
     finally:
         await runner.cleanup()
 
+    # 限流提示要能算出恢复时间，别只说"稍后再试"
+    print("\n[upd] 限流提示与缓存")
+    import time as _t
+
+    class _Resp:
+        def __init__(self, headers):
+            self.headers = headers
+
+    hint = u._ratelimit_hint(_Resp({"x-ratelimit-remaining": "0",
+                                    "x-ratelimit-reset": str(int(_t.time()) + 130)}))
+    check("60 次" in hint and "恢复" in hint, f"额度用完给出恢复时间：{hint[:40]}…")
+    hint2 = u._ratelimit_hint(_Resp({}))
+    check("403" in hint2, "非限流的 403 给另一种解释")
+
+    # 60 秒缓存：连点检查更新不该把每分钟配额打光
+    from aiohttp import web as _web
+
+    count = {"n": 0}
+
+    async def _count(req):
+        count["n"] += 1
+        return _web.json_response(payload)
+
+    _app = _web.Application()
+    _app.add_routes([_web.get("/rel", _count)])
+    _r = _web.AppRunner(_app)
+    await _r.setup()
+    _site = _web.TCPSite(_r, "127.0.0.1", 0)
+    await _site.start()
+    _p = _site._server.sockets[0].getsockname()[1]
+    try:
+        base = f"http://127.0.0.1:{_p}"
+        a1 = await u.fetch_latest(api_url=base + "/rel", timeout=5)
+        a2 = await u.fetch_latest(api_url=base + "/rel", timeout=5)
+        check(count["n"] == 1, f"60 秒内只打一次接口（实际 {count['n']} 次）")
+        check(a1["version"] == a2["version"], "缓存返回同样的内容")
+        check(a1 is not a2, "返回副本，调用方改坏缓存不影响下一次")
+        a1["tag"] = "mutated"
+        a3 = await u.fetch_latest(api_url=base + "/rel", timeout=5)
+        check(a3["tag"] == "v0.4.0", "改副本不污染缓存")
+        await u.fetch_latest(api_url=base + "/rel", timeout=5, use_cache=False)
+        check(count["n"] == 2, "use_cache=False 能强制刷新")
+    finally:
+        await _r.cleanup()
+
     # 太小当成下载失败
     print("\n[upd] 下载异常")
     class Tiny:

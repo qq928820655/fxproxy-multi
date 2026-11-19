@@ -102,12 +102,43 @@ def version_of_tag(tag: str) -> str:
 
 
 # ------------------------------------------------------------------ 查最新版
+# 匿名 GitHub API 每小时只有 60 次。面板上连点几下「检查更新」就可能打光，
+# 然后一小时里都报限流。留个 60 秒缓存挡住手速。
+_CACHE: dict[str, tuple[float, dict]] = {}
+CACHE_TTL = 60.0
+
+
+def _ratelimit_hint(resp, body_empty: bool = False) -> str:
+    """把 403 分成「额度用完」和「别的拒绝」，并算出几分钟后恢复。"""
+    remaining = (resp.headers.get("x-ratelimit-remaining") or "").strip()
+    reset = (resp.headers.get("x-ratelimit-reset") or "").strip()
+    when = ""
+    if reset.isdigit():
+        secs = int(reset) - int(time.time())
+        if secs > 0:
+            import datetime as _dt
+            hhmm = _dt.datetime.fromtimestamp(int(reset)).strftime("%H:%M")
+            when = f"{max(1, secs // 60)} 分钟后（{hhmm}）恢复"
+    if remaining == "0" or when:
+        return ("GitHub API 额度用完了（匿名每小时 60 次）。"
+                + (f"{when}。" if when else "过一会儿再试。")
+                + "急的话在面板「GitHub 代理」里填代理，或设 FXPROXY_UPDATE_API "
+                  "指向自建镜像。")
+    return ("GitHub API 拒绝了请求（403），可能是代理返回的页面、或被墙。"
+            "检查面板里的 GitHub 代理，或用 FXPROXY_GH_PROXY 套镜像。")
+
+
 async def fetch_latest(api_url: str | None = None, proxy: str | None = None,
-                       timeout: float = 12.0) -> dict:
+                       timeout: float = 12.0, use_cache: bool = True) -> dict:
     """拉最新 release。返回 {tag, version, name, notes, html_url, assets}。"""
     import aiohttp
 
     url = api_url or os.environ.get("FXPROXY_UPDATE_API") or API_LATEST.format(repo=REPO)
+    key = f"{url}|{proxy or ''}"
+    if use_cache:
+        hit = _CACHE.get(key)
+        if hit and (time.time() - hit[0]) < CACHE_TTL:
+            return dict(hit[1])
     headers = {"User-Agent": UA, "Accept": "application/vnd.github+json"}
     try:
         async with aiohttp.ClientSession(
@@ -117,7 +148,7 @@ async def fetch_latest(api_url: str | None = None, proxy: str | None = None,
                 if r.status == 404:
                     raise RuntimeError("仓库还没有 Release（或 API 地址不对）")
                 if r.status == 403:
-                    raise RuntimeError("GitHub API 限流，稍后再试或配 token")
+                    raise RuntimeError(_ratelimit_hint(r))
                 r.raise_for_status()
                 data = await r.json()
     except asyncio.TimeoutError as e:
@@ -131,7 +162,7 @@ async def fetch_latest(api_url: str | None = None, proxy: str | None = None,
          "size": a.get("size", 0)}
         for a in (data.get("assets") or [])
     ]
-    return {
+    out = {
         "tag": tag,
         "version": version_of_tag(tag),
         "name": data.get("name") or tag,
@@ -140,6 +171,8 @@ async def fetch_latest(api_url: str | None = None, proxy: str | None = None,
         "published_at": data.get("published_at") or "",
         "assets": assets,
     }
+    _CACHE[key] = (time.time(), out)
+    return dict(out)
 
 
 def pick_asset(assets: list[dict], tag: str, plat: str | None = None) -> dict | None:
@@ -580,10 +613,9 @@ async def run_update(dest: Path, cfg: Path, tag: str, asset: dict, *,
                      mode: str = "") -> dict:
     """下载 + 校验 + 生成脚本 + 拉起。返回给面板展示的信息。"""
     run = run_dir(dest)
-    suffix = Path(asset["name"]).suffix
-    if asset["name"].endswith(".tar.gz"):
-        suffix = ".tar.gz"
-    pkg = run / f"fxproxy-{version_of_tag(tag)}{suffix}"
+    # 用制品原名当文件名：同一目录可能先后放过 win/linux 两种包，
+    # 只留扩展名容易互相覆盖，出问题时也不好认。
+    pkg = run / Path(asset["name"]).name
     if pkg.exists():
         pkg.unlink()
     url = asset_url(asset["url"], gh_proxy)
