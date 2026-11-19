@@ -23,6 +23,14 @@ async function grab() {
   if (!tab || !/^https:\/\/accounts\.firefox\.com(\.cn)?\//.test(tab.url || "")) {
     throw new Error("请先打开并登录 accounts.firefox.com 再点提取");
   }
+  // 兜底：有些环境（指纹浏览器 / 已打开很久的标签页）不会自动注入
+  // manifest 里声明的 content script，这里手动补一次。重复注入无害——
+  // content.js 是 IIFE，重复执行只是覆盖同名函数。
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+  } catch (e) {
+    // 注入失败就继续，下面 executeScript 会返回 "extractor not ready"
+  }
   var results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: function () {
