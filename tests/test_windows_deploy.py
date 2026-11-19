@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""deploy/windows 静态回归：编码、线尾、参数顺序。
+
+这些不是"能跑就行"的细节，每一条都对应过线上真实故障：
+- bat 混进非 ASCII  -> cmd.exe 用 GBK 解析，中文注释里的字节被当成命令吞掉
+- bat 用 LF         -> cmd.exe 偶尔把两行粘成一行
+- ps1 没 BOM        -> Windows PowerShell 5.1 按 GBK 读，中文全乱、语法报错
+- `run -c cfg`      -> argparse 顶层参数放子命令后面，直接 unrecognized arguments
+"""
+
+import pathlib
+import re
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+WD = ROOT / "deploy" / "windows"
+
+PASS = 0
+FAIL = 0
+
+
+def check(ok, msg):
+    global PASS, FAIL
+    if ok:
+        PASS += 1
+        print(f"  ok  {msg}")
+    else:
+        FAIL += 1
+        print(f"  FAIL {msg}")
+
+
+# 子命令名，用来抓 "-c 写在子命令后面" 的反模式
+SUBCOMMANDS = ("login", "accounts", "status", "token", "servers",
+               "run", "export-clash", "web")
+
+
+def main():
+    print("[win] 文件齐全")
+    for name in ("install.bat", "start.bat", "stop.bat", "status.bat",
+                 "install.ps1", "ctl.ps1", "README.md"):
+        check((WD / name).is_file(), f"{name} 存在")
+
+    print("\n[win] .bat 编码与线尾")
+    for bat in sorted(WD.glob("*.bat")):
+        raw = bat.read_bytes()
+        try:
+            raw.decode("ascii")
+            ascii_ok = True
+        except UnicodeDecodeError:
+            ascii_ok = False
+        check(ascii_ok, f"{bat.name} 纯 ASCII（cmd 不会因 GBK 咬字节）")
+        check(not raw.startswith(b"\xef\xbb\xbf"), f"{bat.name} 无 BOM")
+        lone_lf = len(re.findall(rb"(?<!\r)\n", raw))
+        check(lone_lf == 0, f"{bat.name} 全部 CRLF（裸 LF {lone_lf} 处）")
+        check(b"pause" in raw, f"{bat.name} 双击场景有 pause")
+        check(b'if "%~1"=="" pause' in raw or b'if "%~1"=="-q" exit /b 0' in raw,
+              f"{bat.name} 有参数时不等按键（可被脚本调用）")
+
+    print("\n[win] .ps1 编码")
+    for ps in sorted(WD.glob("*.ps1")):
+        raw = ps.read_bytes()
+        check(raw.startswith(b"\xef\xbb\xbf"),
+              f"{ps.name} 带 UTF-8 BOM（PowerShell 5.1 才不乱码）")
+        body = raw[3:].decode("utf-8")
+        check("\r\n" in body, f"{ps.name} 使用 CRLF")
+        # 中文函数名/注释乱码的典型残留
+        check("\ufffd" not in body, f"{ps.name} 无替换字符（没被错误转码）")
+
+    print("\n[win] fxproxy 参数顺序（-c 必须在子命令前）")
+    bad = []
+    for ps in sorted(WD.glob("*.ps1")):
+        text = ps.read_text(encoding="utf-8-sig")
+        # 形如 "run", "-c"  或  status -c $Cfg  或  login ... -c $Cfg
+        for m in re.finditer(r'"(%s)"\s*,\s*"-c"' % "|".join(SUBCOMMANDS), text):
+            bad.append(f"{ps.name}: \"{m.group(1)}\", \"-c\"")
+        for m in re.finditer(r'(?<![-"\w])(%s)\b[^\r\n]*?\s-c\s' % "|".join(SUBCOMMANDS), text):
+            seg = m.group(0)
+            if "-c" in seg.split("--")[0]:
+                bad.append(f"{ps.name}: {seg.strip()}")
+    check(not bad, "没有把 -c 写在子命令之后" + ("" if not bad else f" -> {bad}"))
+
+    print("\n[win] -c 与子命令的正确形态存在")
+    ctl = (WD / "ctl.ps1").read_text(encoding="utf-8-sig")
+    ins = (WD / "install.ps1").read_text(encoding="utf-8-sig")
+    check(re.search(r'"-c",\s*\$CfgPath,\s*"run"', ctl) is not None,
+          "ctl.ps1 启动代理用 -c $CfgPath run")
+    check(re.search(r'"-c",\s*\$CfgPath,\s*"web"', ctl) is not None,
+          "ctl.ps1 启动面板用 -c $CfgPath web")
+    check(re.search(r'&\s*\$Fx\s+-c\s+\$CfgPath\s+status', ctl) is not None,
+          "ctl.ps1 查状态用 -c $CfgPath status")
+    check(re.search(r'&\s*\$Fx\s+-c\s+\$CfgPath\s+login', ins) is not None,
+          "install.ps1 导入凭证用 -c $CfgPath login")
+
+    print("\n[win] install.bat 透传参数")
+    ib = (WD / "install.bat").read_text(encoding="ascii")
+    check('install.ps1" %*' in ib, "install.bat 用 %* 把参数透传给 install.ps1")
+
+    print("\n[win] 端口/进程清理有防护")
+    check("Test-PortOpen" in ctl, "ctl.ps1 起之前检查端口占用")
+    check("HasExited" in ctl, "ctl.ps1 检查进程是否秒退")
+    check("Get-RunningPid" in ctl, "ctl.ps1 用 pid 文件防重复启动")
+
+    print("\n[win] 卸载路径存在")
+    check("Uninstall" in ins, "install.ps1 支持 -Uninstall")
+    check("fxproxy-run" in ins or "schtasks" in ins.lower(),
+          "install.ps1 处理了计划任务（-Autostart 的清理/注册）")
+
+    print(f"\nPASS={PASS}  FAIL={FAIL}")
+    return 1 if FAIL else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

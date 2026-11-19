@@ -186,12 +186,34 @@ Python ≥ 3.10。
 
 ## 快速开始
 
-### Windows（PowerShell）
+### Windows —— 一键部署（推荐）
+
+双击 `deploy\windows\install.bat`。它建 venv、装依赖、写 `config.json`、起代理和面板，
+完事自动打开 `http://127.0.0.1:8765`。不需要管理员权限，全部写在项目目录内。
+
+```bat
+install.bat -Country US -Autostart              :: 指定国家 + 开机自启
+install.bat -CookieFile D:\export.json          :: 直接导入插件导出文件
+install.bat -NoStart                            :: 只装不起
+install.bat -Uninstall                          :: 停进程 + 删 venv/.run/计划任务
+```
+
+起停与状态：
+
+```bat
+deploy\windows\start.bat     :: 启动并打开面板
+deploy\windows\stop.bat      :: 全部停掉
+deploy\windows\status.bat    :: 进程 / 端口 / 额度 / 日志末尾
+```
+
+端口、凭证导入、日志位置、故障对照表见 [deploy/windows/README.md](deploy/windows/README.md)。
+
+### Windows —— 手动安装（不想用脚本时）
 
 ```powershell
 # 1) 克隆并进目录
-git clone https://github.com/ios151/firefox.git
-cd firefox
+git clone https://github.com/qq928820655/fxproxy-multi.git
+cd fxproxy-multi
 
 # 2) 安装（含依赖 aiohttp）
 pip install -e .          # 若提示 pip 不是命令：python -m pip install -e .

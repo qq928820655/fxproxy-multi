@@ -1,9 +1,19 @@
+# 归一化放在最前：后面的具体规则才能覆盖它
+* text=auto
+
 # 扩展源码统一 LF：zip/crx 是按字节打包的，工作区一旦被转成 CRLF，
 # 产物就会和源码不一致（tests/test_zip.py 会报 manifest.json 不一致）。
 chrome-extension/* text eol=lf
-
-# 打包/测试脚本也用 LF，避免 bash 下 CRLF 造成的解释器问题
 tools/*.py text eol=lf
 tests/*.py text eol=lf
 
-* text=auto
+# Windows 脚本必须 CRLF：cmd.exe 对裸 LF 的 bat 偶发粘行，
+# PowerShell 的续行反引号在 CRLF 下才稳。
+deploy/windows/*.ps1 text eol=crlf
+deploy/windows/*.bat text eol=crlf
+
+# 文档保持 LF（Windows 版说明也一样，避免 diff 噪音）
+*.md text eol=lf
+
+# Linux 部署脚本保持 LF
+deploy/*.sh text eol=lf

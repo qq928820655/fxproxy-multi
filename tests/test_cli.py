@@ -153,6 +153,27 @@ def main():
     check(f"fxproxy {fxproxy.__version__}" in buf.getvalue(),
           f"--version 输出含 fxproxy {fxproxy.__version__}")
 
+    # ---- -c/--config 两个位置都要认（顶层 / 子命令后），否则部署脚本一改顺序就炸 ----
+    print("[cli] -c 位置兼容")
+    bp = cli_mod.build_parser()
+    for argv, want_cmd in (
+        (["-c", "a.json", "run"], "run"),
+        (["run", "-c", "a.json"], "run"),
+        (["-c", "a.json", "status"], "status"),
+        (["status", "-c", "b.json"], "status"),
+        (["login", "--cookie", "x", "-c", "c.json"], "login"),
+        (["export-clash", "-c", "d.json"], "export-clash"),
+    ):
+        ns = bp.parse_args(argv)
+        check(ns.cmd == want_cmd and getattr(ns, "config", None) is not None,
+              f"{' '.join(argv)} -> cmd={want_cmd} config={getattr(ns, 'config', None)}")
+    # 顶层给了、子命令没给 -> 保留顶层值（SUPPRESS 生效）
+    ns = bp.parse_args(["-c", "top.json", "status"])
+    check(ns.config == "top.json", "子命令未写 -c 时不覆盖顶层的 config")
+    # 都不给 -> 不报错，落到 None 由 config 模块取默认
+    ns = bp.parse_args(["run"])
+    check(getattr(ns, "config", None) is None, "不给 -c 时 config 为 None")
+
     print(f"\nALL CLI TESTS PASSED ({PASS} checks)")
 
 

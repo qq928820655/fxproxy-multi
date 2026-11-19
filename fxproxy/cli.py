@@ -370,6 +370,12 @@ def build_parser() -> argparse.ArgumentParser:
     wp.add_argument("--web-port", type=int, default=8765)
     wp.add_argument("--no-open", action="store_true", help="don't auto-open a browser")
     wp.set_defaults(func=cmd_web)
+
+    # -c/--config 两个位置都接受：顶层（fxproxy -c X run）和子命令后（fxproxy run -c X）。
+    # 子命令这份用 SUPPRESS 缺省，没写就不会覆盖顶层已经解析出来的值。
+    for _sp in sub.choices.values():
+        _sp.add_argument("-c", "--config", default=argparse.SUPPRESS,
+                         help="config file path")
     return p
 
 
