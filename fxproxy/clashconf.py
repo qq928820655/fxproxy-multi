@@ -37,6 +37,10 @@ def build_clash_yaml(
         "allow-lan: false\n"
         "mode: rule\n"
         "log-level: info\n"
+        # 网关是双栈，但到 Cloudflare 的 IPv6 国际链路经常不稳/不通。
+        # 强制用 IPv4 解析并连接 server，避免客户端优先走 IPv6 导致
+        # 单连接也频繁超时。目标域名仍由服务端解析，不受此影响。
+        "ip-version: ipv4\n"
         "proxies:\n"
         f'  - name: "{hname}"\n'
         "    type: http\n"
