@@ -174,12 +174,36 @@ class GuardianClient:
             pass
         return None
 
+    def _fpn_headers(self) -> dict:
+        """Headers for vpn.mozilla.org (fpn status/token).
+
+        That API answers 406 to any browser ``User-Agent``, so when the
+        control-plane UA is spoofed as Firefox we still send a non-browser UA
+        here. FxA endpoints (token/profile) keep the spoofed UA.
+        """
+        h = {"Authorization": "Bearer " + self.access_token}
+        ua = self._s.headers.get("User-Agent", "")
+        if ua.startswith("Mozilla/"):
+            h["User-Agent"] = "fxproxy/1.0"
+        return h
+
+    def _get_fpn(self, path: str):
+        """GET an fpn endpoint; on 401 drop the cached bearer and retry once.
+
+        A 401 means the cached access token was revoked (e.g. the same account
+        signed in on another server), not that the refresh_token is dead — a
+        fresh exchange usually still works, so self-heal instead of staying red.
+        """
+        url = GUARDIAN_BASE + path
+        r = self._s.get(url, headers=self._fpn_headers(), timeout=20)
+        if r.status_code == 401:
+            self._access_token = None
+            self._access_exp = 0.0
+            r = self._s.get(url, headers=self._fpn_headers(), timeout=20)
+        return r
+
     def status(self) -> dict:
-        r = self._s.get(
-            GUARDIAN_BASE + "/api/v1/fpn/status",
-            headers=self._auth_header(),
-            timeout=20,
-        )
+        r = self._get_fpn("/api/v1/fpn/status")
         if r.status_code == 403:
             raise NotEnrolledError(
                 "account not enrolled (HTTP 403) — run the `login` bootstrap"
@@ -231,11 +255,7 @@ class GuardianClient:
 
     # ---- proxy pass ---------------------------------------------------
     def _fetch_pass(self) -> str:
-        r = self._s.get(
-            GUARDIAN_BASE + "/api/v1/fpn/token",
-            headers=self._auth_header(),
-            timeout=20,
-        )
+        r = self._get_fpn("/api/v1/fpn/token")
         if r.status_code == 403:
             raise NotEnrolledError(
                 "account not enrolled (HTTP 403) — run the `login` bootstrap"

@@ -305,6 +305,46 @@ def test_runtime_user_agent():
           "关闭后恢复 requests 默认 UA")
 
 
+def test_fpn_401_selfheal_and_ua():
+    print("[fpn] 401 自愈 + 浏览器 UA 不发给 fpn")
+    from fxproxy.guardian import GuardianClient, FIREFOX_UA
+
+    class Resp:
+        def __init__(self, code, body=None):
+            self.status_code = code
+            self._body = body or {}
+            self.text = str(self._body)
+            self.headers = {}
+        def json(self):
+            return self._body
+
+    class Sess:
+        def __init__(self):
+            self.headers = {"User-Agent": FIREFOX_UA}
+            self.gets = []
+            self._n = 0
+            self.posts = 0
+        def post(self, url, json=None, timeout=None):
+            self.posts += 1
+            return Resp(200, {"access_token": "at%d" % self.posts, "expires_in": 3600})
+        def get(self, url, headers=None, timeout=None):
+            self.gets.append(dict(headers or {}))
+            self._n += 1
+            if self._n == 1:
+                return Resp(401, {"error": "Unauthorized"})
+            return Resp(200, {"uid": 42, "maxBytes": "0"})
+
+    s = Sess()
+    gc = GuardianClient("rt", session=s)
+    st = gc.status()
+    check(st.get("uid") == 42, "401 后换新 token 重试成功")
+    check(len(s.gets) == 2 and s.posts >= 2, "发生一次重试与重新取 token")
+    check(all(g.get("User-Agent") == "fxproxy/1.0" for g in s.gets),
+          "fpn 请求改用非浏览器 UA（否则 406）")
+    check(s.gets[0].get("Authorization") != s.gets[1].get("Authorization"),
+          "重试携带刷新后的 bearer")
+
+
 def test_node_picker_exclude():
     print("[nodes] 禁用节点从选择池排除")
     from fxproxy.proxyserver import NodePicker
@@ -334,6 +374,7 @@ if __name__ == "__main__":
     test_port_helpers()
     test_force_ipv4_egress()
     test_runtime_user_agent()
+    test_fpn_401_selfheal_and_ua()
     test_node_picker_exclude()
     test_pool_round_robin()
     test_pool_failover()
