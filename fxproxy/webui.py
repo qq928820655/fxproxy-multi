@@ -2031,14 +2031,22 @@ class Panel:
                 if nodes:
                     names = "".join(f"      - fxproxy-{c}-{n}\n"
                                     for c, n, _, _ in nodes)
-                    # 只留 url-test（固定最优节点），不再用 load-balance
-                    # round-robin。轮询会对每条新连接拨一个新节点、新建
-                    # 一条到网关的 wss，浏览器一开网页几十并发就把到网关
-                    # 的链路打满（实测日志大量 context deadline exceeded）。
-                    # url-test 选中一个节点后保持不变，只在它失效时切换。
-                    # lazy:true 让 mihomo 不主动定期测速，只在用时按需。
+                    # 提供两个聚合组：
+                    #  - fxproxy-auto：load-balance 轮询全部节点（多节点/多连接
+                    #    叠加带宽），但每条新连接会换节点、重建 wss，链路差时
+                    #    开销大，故不设为默认。
+                    #  - fxproxy-fast：url-test 自动选最快节点并固定使用，只在
+                    #    失效时切换，最稳，作为 PROXY 默认。
                     lb_group = (
-                        "\n  - name: \"fxproxy-fast\"\n"
+                        "\n  - name: \"fxproxy-auto\"\n"
+                        "    type: load-balance\n"
+                        "    url: https://www.gstatic.com/generate_204\n"
+                        "    interval: 600\n"
+                        "    lazy: true\n"
+                        "    strategy: round-robin\n"
+                        "    proxies:\n"
+                        + names
+                        + "\n  - name: \"fxproxy-fast\"\n"
                         "    type: url-test\n"
                         "    url: https://www.gstatic.com/generate_204\n"
                         "    interval: 600\n"
@@ -2048,6 +2056,7 @@ class Panel:
                         + names
                     )
                     new_group = ("      - fxproxy-fast\n"
+                                 "      - fxproxy-auto\n"
                                  + names)
                 else:
                     lb_group = ""
