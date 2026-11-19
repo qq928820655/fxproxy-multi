@@ -585,9 +585,12 @@ async function loadAccounts(){
     });
     $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无账号</td></tr>';
     const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
+    // Firefox 免费账号不扣额度（used 恒为 0），优先展示本地计量的真实用量
+    const localUsed = d.local_used_bytes||0;
+    const usedShown = (localUsed>0) ? localUsed : d.total_used_bytes;
     $("totalRemain").textContent = d.unlimited ? "不限量"
-      : ((d.total_used_bytes!=null && d.total_max_bytes!=null)
-         ? "已用 "+fmt(d.total_used_bytes)+" / "+fmt(d.total_max_bytes)
+      : ((usedShown!=null && d.total_max_bytes!=null)
+         ? "已用 "+fmt(usedShown)+" / "+fmt(d.total_max_bytes)
          : (remTxt || (d.total_max_bytes!=null ? "月度 "+fmt(d.total_max_bytes)+" · 用量待取" : "部分未知")));
   }catch(e){ $("acctBody").innerHTML = '<tr><td colspan="6" class="muted">加载失败</td></tr>'; }
 }
@@ -802,6 +805,47 @@ class Panel:
         self.web_port = int(web_port or 8765)
         # 一键更新：同一时间只允许一个，重启进程后自然复位
         self._updating = False
+        # 本地流量计量：Firefox 的免费账号不会通过 API 扣减额度（x-quota
+        # 始终返回满额），所以用量只能自己按 vless 转发字节数累计。持久化
+        # 到配置同目录的 traffic.json，重启不清零。
+        self._traffic = self._load_traffic()
+        self._traffic_flush_at = 0.0
+
+    # ---- local traffic meter -----------------------------------------
+    def _traffic_path(self) -> Path:
+        base = Path(self.config_path) if self.config_path else cfgmod.DEFAULT_PATH
+        return base.with_name("traffic.json")
+
+    def _load_traffic(self) -> dict:
+        try:
+            d = json.loads(self._traffic_path().read_text())
+            return {"up": int(d.get("up", 0)), "down": int(d.get("down", 0))}
+        except Exception:
+            return {"up": 0, "down": 0}
+
+    def _save_traffic(self):
+        try:
+            p = self._traffic_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._traffic))
+            tmp.replace(p)
+        except Exception:
+            pass
+
+    def _add_traffic(self, up: int, down: int):
+        if not up and not down:
+            return
+        self._traffic["up"] += int(up)
+        self._traffic["down"] += int(down)
+        now = time.monotonic()
+        # 节流落盘：最多每 10 秒写一次，避免每条连接都碰磁盘
+        if now - self._traffic_flush_at >= 10:
+            self._traffic_flush_at = now
+            self._save_traffic()
+
+    def _local_used(self) -> int:
+        return int(self._traffic.get("up", 0)) + int(self._traffic.get("down", 0))
 
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
@@ -988,7 +1032,10 @@ class Panel:
     async def api_accounts(self, req):
         if self.pool is None:
             return web.json_response({"accounts": [], "total_remaining_bytes": None,
-                                      "unlimited": False})
+                                      "unlimited": False,
+                                      "local_used_bytes": self._local_used(),
+                                      "local_up_bytes": int(self._traffic.get("up", 0)),
+                                      "local_down_bytes": int(self._traffic.get("down", 0))})
         s = self.pool.summary()
         rows = self._account_rows()
         return web.json_response({
@@ -998,6 +1045,9 @@ class Panel:
             "total_max_bytes": s.get("total_max_bytes"),
             "unlimited": s["unlimited"],
             "strategy": s["strategy"],
+            "local_used_bytes": self._local_used(),
+            "local_up_bytes": int(self._traffic.get("up", 0)),
+            "local_down_bytes": int(self._traffic.get("down", 0)),
         })
 
     async def api_accounts_refresh(self, req):
@@ -1833,6 +1883,7 @@ class Panel:
                 await ws.close()
             except Exception:
                 pass
+            self._add_traffic(_stat["up"], _stat["down"])
         return ws
 
     async def _serve_mux_session(self, ws, buf, node_host, node_port):
@@ -1847,6 +1898,7 @@ class Panel:
 
         async def on_stream(reader, writer):
             up_w = None
+            meter = {"up": 0, "down": 0}
             try:
                 atyp = (await reader.readexactly(1))[0]
                 import socket as _s
@@ -1865,6 +1917,7 @@ class Panel:
                 if leftover:
                     writer.write(leftover)
                     await writer.drain()
+                    meter["down"] += len(leftover)
 
                 async def c2t():
                     try:
@@ -1874,6 +1927,7 @@ class Panel:
                                 break
                             up_w.write(d)
                             await up_w.drain()
+                            meter["up"] += len(d)
                     except Exception:
                         pass
 
@@ -1885,6 +1939,7 @@ class Panel:
                                 break
                             writer.write(d)
                             await writer.drain()
+                            meter["down"] += len(d)
                     except Exception:
                         pass
 
@@ -1909,6 +1964,7 @@ class Panel:
                         up_w.close()
                     except Exception:
                         pass
+                self._add_traffic(meter["up"], meter["down"])
 
         try:
             server = await asyncio.start_server(on_stream, "127.0.0.1", 0)
@@ -2160,23 +2216,34 @@ class Panel:
         """Build the ``subscription-userinfo`` header Clash/FlClash reads to
         show traffic quota. Format: upload/download/total in bytes, expire as a
         unix timestamp (0 = no expiry). ``total=0`` is rendered as unlimited by
-        the clients, which matches accounts with no cap."""
+        the clients, which matches accounts with no cap.
+
+        Firefox 免费账号的 x-quota 头始终返回满额（不会扣减），所以优先用
+        本地按转发字节累计的用量；本地为 0 时才回落到 Firefox 的 used。
+        """
         if self.pool is None:
             return None
         try:
             s = await asyncio.to_thread(self.pool.summary)
         except Exception:
-            return None
+            s = {}
         total = s.get("total_max_bytes") or 0
         if s.get("unlimited"):
             total = 0
-        used = s.get("total_used_bytes")
-        if used is None:
+        ff_used = s.get("total_used_bytes")
+        if ff_used is None:
             rem = s.get("total_remaining_bytes")
             if rem is not None and total:
-                used = max(0, total - rem)
-        used = used or 0
-        return f"upload=0; download={int(used)}; total={int(total)}; expire=0"
+                ff_used = max(0, total - rem)
+        ff_used = int(ff_used or 0)
+        local_up = int(self._traffic.get("up", 0))
+        local_down = int(self._traffic.get("down", 0))
+        if local_up or local_down:
+            upload, download = local_up, local_down
+        else:
+            upload, download = 0, ff_used
+        return (f"upload={upload}; download={download}; "
+                f"total={int(total)}; expire=0")
 
     async def api_config(self, req):
         if self.pool is None or not self.pool.tokens:

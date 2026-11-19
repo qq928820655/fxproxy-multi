@@ -233,6 +233,12 @@ async def main():
             check(f"download={exp_used}" in ui and f"total={exp_total}" in ui
                   and "upload=0" in ui and "expire=0" in ui,
                   f"订阅带配额头 subscription-userinfo（实得 {ui!r}）")
+            # Firefox 免费账号不扣额度，本地计量应优先于 Firefox 的 0
+            panel._add_traffic(1111, 2222)
+            r2 = await cli.get("/clash.yaml")
+            ui2 = r2.headers.get("subscription-userinfo", "")
+            check("upload=1111" in ui2 and "download=2222" in ui2,
+                  f"本地流量优先于 Firefox 用量（实得 {ui2!r}）")
 
             print("[api] clash.yaml?provider=1 —— mihomo proxy-provider 形态")
             rp = await cli.get("/clash.yaml?provider=1")
