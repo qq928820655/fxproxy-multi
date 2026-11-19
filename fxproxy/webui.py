@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 import urllib.request
 import webbrowser
+from pathlib import Path
 
 from aiohttp import web
 
@@ -26,6 +28,11 @@ from .proxyserver import NodePicker, ProxyServer
 def _fxa():
     from . import fxa_auth
     return fxa_auth
+
+
+def _updater():
+    from . import updater
+    return updater
 
 
 def _port_free(host: str, port: int) -> bool:
@@ -183,6 +190,27 @@ PAGE = """<!doctype html>
     </div>
     <div id="nodeWarn" style="display:none;margin-top:8px;color:#f0b400;font-size:13px;"></div>
     <div id="egress" class="egress muted"></div>
+
+    <div style="border-top:1px solid #21262d;margin-top:14px;padding-top:12px;">
+      <div class="row">
+        <label>版本</label>
+        <span id="verNow" class="pill off">—</span>
+        <span id="verLatest" class="muted" style="margin-top:0;"></span>
+        <button id="verCheck" class="sm">检查更新</button>
+        <button id="verUpdate" class="primary sm" disabled>一键更新</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <label>GitHub 代理</label>
+        <input id="ghProxy" placeholder="http://127.0.0.1:7890（留空直连）"
+               style="min-width:0;flex:1;padding:6px 8px;font-size:13px;">
+      </div>
+      <div id="verMsg" class="muted" style="font-size:12px;margin-top:4px;">
+        更新只替换代码目录，<code>config.json</code>、<code>.venv</code>、<code>.run</code> 都不动。
+      </div>
+      <pre id="verLog" style="display:none;max-height:160px;overflow:auto;background:#0d1117;
+           border:1px solid #21262d;border-radius:8px;padding:8px;font-size:11px;line-height:1.5;
+           color:#8b949e;margin-top:8px;white-space:pre-wrap;word-break:break-all;"></pre>
+    </div>
   </div>
 
   <div class="card">
@@ -463,6 +491,7 @@ async function loadState(){
   $("listen").textContent = s.running ? egress : "";
   $("strategy").value = s.strategy || "round-robin";
   $("acctCount").textContent = "("+(s.account_count||0)+" 个)";
+  if(s.version){ $("verNow").textContent = "v"+s.version; $("verNow").className = "pill on"; }
   if(!userPicked && s.running && s.country){ $("country").value = s.country; updateNodeWarn(); }
 }
 async function loadAccounts(){
@@ -573,6 +602,85 @@ $("portBtn").onclick = async () => {
   }catch(e){ msg.style.color = "#f85149"; msg.textContent = "请求失败："+e; }
   finally{ btn.disabled = false; }
 };
+/* ---------- 版本 / 一键更新 ---------- */
+let VER = {latest:"", has_update:false, platform:""};
+async function verInit(){
+  try{
+    const r = await fetch("/api/version"); const d = await r.json();
+    VER.platform = d.platform_label || d.platform || "";
+    if(d.update_proxy) $("ghProxy").value = d.update_proxy;
+    $("verNow").textContent = "v"+d.current;
+    const kind = (d.install && d.install.kind) || "unknown";
+    if(kind === "unknown"){
+      $("verMsg").textContent = "当前是 pip 装进 site-packages 的形态，面板没法就地替换代码；用安装脚本或发行包重装一次之后这个按钮才可用。";
+      $("verUpdate").disabled = true;
+    }else{
+      $("verMsg").textContent = "平台 "+VER.platform+" · "+
+        (kind==="git" ? "git 仓库" : "发行包")+" · "+d.install.root;
+    }
+  }catch(e){ $("verMsg").textContent = "读版本失败："+e; }
+}
+async function verCheck(){
+  const btn=$("verCheck"), msg=$("verMsg"), up=$("verUpdate");
+  btn.disabled=true; up.disabled=true; msg.style.color=""; msg.textContent="检查中…";
+  try{
+    const p = encodeURIComponent($("ghProxy").value.trim());
+    const r = await fetch("/api/version?check=1&proxy="+p); const d = await r.json();
+    if(d.error){ msg.style.color="#f85149"; msg.textContent=d.error; return; }
+    VER.latest=d.latest; VER.has_update=!!d.has_update;
+    if(d.has_update){
+      $("verLatest").textContent = "→ 最新 v"+d.latest;
+      msg.textContent = "发现新版 v"+d.latest+"（"+(d.asset?d.asset.name:"?")+"）";
+      up.disabled=false;
+    }else{
+      $("verLatest").textContent = "已是最新";
+      msg.textContent = "已是最新 v"+d.latest;
+    }
+  }catch(e){ msg.style.color="#f85149"; msg.textContent="检查失败："+e; }
+  finally{ btn.disabled=false; }
+}
+async function verPoll(n){
+  const log=$("verLog"), msg=$("verMsg");
+  if(n > 150){ msg.style.color="#f85149"; msg.textContent="等太久了，手动刷新页面看状态（日志见 .run/update.log）"; return; }
+  try{
+    const r = await fetch("/api/update/status",{cache:"no-store"}); const d = await r.json();
+    if(d.log && d.log.length){ log.textContent = d.log.join("\n"); log.scrollTop = log.scrollHeight; }
+    if(d.state === "ok"){
+      msg.style.color="#3fb950"; msg.textContent="已升级到 v"+d.to+"，刷新中…";
+      setTimeout(()=>location.reload(), 1500); return;
+    }
+    if(d.state === "fail"){
+      msg.style.color="#f85149"; msg.textContent="升级失败："+d.message;
+      $("verCheck").disabled=false; return;
+    }
+  }catch(e){ msg.style.color="#d29922"; msg.textContent="面板重启中…（等待重连）"; }
+  setTimeout(()=>verPoll(n+1), 1200);
+}
+$("verCheck").onclick = verCheck;
+$("verUpdate").onclick = async () => {
+  if(!VER.has_update) return;
+  if(!confirm("确认升级到 v"+VER.latest+"？\n\n流程：下载制品 → 停服务 → 覆盖代码 → 重装依赖 → 重启。\n面板会断开 10~30 秒，config.json 和 .venv 不动。")) return;
+  const up=$("verUpdate"), msg=$("verMsg");
+  up.disabled=true; $("verCheck").disabled=true;
+  msg.style.color=""; msg.textContent="下载制品并准备升级…";
+  try{
+    const r = await fetch("/api/update",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({confirm:true, proxy:$("ghProxy").value.trim()})});
+    const d = await r.json();
+    if(d.error){
+      msg.style.color="#f85149"; msg.textContent="升级失败："+d.error;
+      up.disabled=false; $("verCheck").disabled=false; return;
+    }
+    if(d.up_to_date){ msg.textContent="已经是最新 v"+d.latest; $("verCheck").disabled=false; return; }
+    $("verLog").style.display="block";
+    msg.style.color="#d29922";
+    msg.textContent="已开始：v"+d.from+" → v"+d.to+"（"+d.asset+"）";
+    verPoll(0);
+  }catch(e){
+    msg.style.color="#f85149"; msg.textContent="升级失败："+e;
+    up.disabled=false; $("verCheck").disabled=false;
+  }
+};
 $("copyCfgBtn").onclick = async () => {
   const r = await fetch("/api/config"); const d = await r.json();
   if(d.error){ $("copyMsg").textContent = "失败："+d.error; return; }
@@ -602,6 +710,7 @@ $("testBtn").onclick = async () => {
   const r = await fetch("/api/egress"); const d = await r.json();
   $("egress").textContent = d.ip ? ("当前出口 IP："+d.ip) : ("测试失败："+(d.error||"")); };
 (async()=>{ await loadServers(); loadNodes(false); await loadState(); await loadAccounts();
+  verInit();
   setInterval(loadAccounts, 15000); setInterval(loadState, 5000);
   setInterval(loadServers, 60000); })();
 </script>
@@ -622,6 +731,8 @@ class Panel:
         # 面板自身监听端口：改代理端口时要把面板端口排除掉，否则自己把自己顶掉
         self.web_host = web_host
         self.web_port = int(web_port or 8765)
+        # 一键更新：同一时间只允许一个，重启进程后自然复位
+        self._updating = False
 
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
@@ -673,7 +784,122 @@ class Panel:
             "http_port": self.cfg.get("http_port", 8080),
             "socks_port": self.cfg.get("socks_port", 1080),
             "web_port": self.web_port,
+            "version": _updater().VERSION,
+            "platform": _updater().platform_tag(),
+            "updating": bool(self._updating),
         })
+
+    # ---- 版本 / 一键更新 ----
+    def _upd_proxy(self, given: str | None = None) -> str | None:
+        """GitHub 访问用的代理：请求里带的 > 配置里的 > 环境变量。"""
+        for v in (given, self.cfg.get("update_proxy"),
+                  os.environ.get("FXPROXY_UPDATE_PROXY")):
+            s = (v or "").strip()
+            if s:
+                return s
+        return None
+
+    async def api_version(self, req):
+        upd = _updater()
+        plat = upd.platform_tag()
+        inst = upd.detect_install()
+        out = {
+            "current": upd.VERSION,
+            "platform": plat,
+            "platform_label": upd.platform_label(plat),
+            "install": inst,
+            "update_proxy": self.cfg.get("update_proxy", ""),
+            "repo": upd.REPO,
+            "doc_url": f"https://github.com/{upd.REPO}/releases",
+        }
+        if req.query.get("check") in ("1", "true", "yes"):
+            proxy = self._upd_proxy(req.query.get("proxy"))
+            try:
+                rel = await upd.fetch_latest(proxy=proxy)
+                asset = upd.pick_asset(rel["assets"], rel["tag"], plat)
+                out.update({
+                    "latest": rel["version"],
+                    "tag": rel["tag"],
+                    "has_update": upd.is_newer(rel["version"], upd.VERSION),
+                    "asset": asset,
+                    "notes": rel["notes"],
+                    "html_url": rel["html_url"],
+                    "checked_at": int(time.time()),
+                })
+                if asset is None:
+                    names = ", ".join(a["name"] for a in rel["assets"]) or "无附件"
+                    out["error"] = (f"{upd.platform_label(plat)} 制品不在 {rel['tag']} 里"
+                                    f"（附件：{names}）")
+            except Exception as e:  # 网络原因千奇百怪，别让面板 500
+                out["error"] = f"检查失败：{e}"
+        return web.json_response(out)
+
+    async def api_update(self, req):
+        upd = _updater()
+        if self._updating:
+            return web.json_response({"error": "已有更新在进行，等它跑完"}, status=409)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        if not body.get("confirm"):
+            return web.json_response({"error": "需要 confirm:true 才真正执行"}, status=400)
+
+        inst = upd.detect_install()
+        if inst["kind"] == "unknown":
+            return web.json_response(
+                {"error": "找不到可覆盖的源码目录（当前像是 pip 装进 site-packages）。"
+                          "用 deploy/linux/install.sh 或发行包重装后再用面板更新。"},
+                status=400)
+        if not inst["writable"]:
+            return web.json_response(
+                {"error": f"目录不可写：{inst['root']}。用安装时那个用户（或 root）跑面板。"},
+                status=400)
+        dest = Path(inst["root"])
+
+        # 面板里填的代理顺手存进配置，下次检查不用再填
+        given = (body.get("proxy") or "").strip()
+        if given and given != (self.cfg.get("update_proxy") or ""):
+            self.cfg["update_proxy"] = given
+            try:
+                cfgmod.save(self.cfg, self.config_path)
+            except Exception:
+                pass
+        proxy = self._upd_proxy(given)
+
+        self._updating = True
+        try:
+            rel = await upd.fetch_latest(proxy=proxy)
+            # 先比版本再挑制品：已是最新时不该因为「本平台没附件」报错
+            if not upd.is_newer(rel["version"], upd.VERSION):
+                self._updating = False
+                return web.json_response({"ok": True, "up_to_date": True,
+                                          "current": upd.VERSION,
+                                          "latest": rel["version"]})
+            asset = upd.pick_asset(rel["assets"], rel["tag"], upd.platform_tag())
+            if asset is None:
+                raise RuntimeError(
+                    f"{rel['tag']} 里没有 {upd.platform_label()} 制品，"
+                    f"可用：{', '.join(a['name'] for a in rel['assets']) or '无'}")
+            cfg_path = Path(self.config_path) if self.config_path else cfgmod.DEFAULT_PATH
+            info = await upd.run_update(
+                dest, cfg_path, rel["tag"], asset, proxy=proxy,
+                gh_proxy=(self.cfg.get("update_gh_proxy") or "").strip() or None,
+                web_host=self.web_host, web_port=self.web_port,
+            )
+            return web.json_response(info)
+        except Exception as e:
+            self._updating = False
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_update_status(self, req):
+        upd = _updater()
+        inst = upd.detect_install()
+        root = Path(inst["root"]) if inst["root"] else Path.cwd()
+        d = upd.read_status(root)
+        d["updating"] = bool(self._updating)
+        d["current"] = upd.VERSION
+        return web.json_response(d)
 
     def _account_rows(self):
         """Build per-account rows from cached quota + live cooldown state."""
@@ -1959,6 +2185,9 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/start", panel.api_start),
         web.post("/api/stop", panel.api_stop),
         web.post("/api/ports", panel.api_ports),
+        web.get("/api/version", panel.api_version),
+        web.post("/api/update", panel.api_update),
+        web.get("/api/update/status", panel.api_update_status),
         web.post("/api/login", panel.api_login),
         web.get("/api/egress", panel.api_egress),
         web.get("/api/config", panel.api_config),

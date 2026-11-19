@@ -269,24 +269,48 @@ resolve_source() {
 
 # ---------------------------------------------------------------- venv + pip
 PIP_ARGS=()
+venv_has_pip() {
+  [[ -x "$VENV/bin/python" ]] || return 1
+  "$VENV/bin/python" -m pip --version >/dev/null 2>&1
+}
+
+make_venv() {
+  log "创建 venv $VENV"
+  if ! run_sh "'$PYTHON' -m venv '$VENV'"; then
+    warn "venv 创建失败，补装 python3-venv 再试"
+    need_root_for_pkg
+    case "$PKG" in
+      apt-get) pkg_install python3-venv ;;
+      apk)     pkg_install py3-virtualenv ;;
+      *) ;;
+    esac
+    run_sh "'$PYTHON' -m venv '$VENV'"
+  fi
+  # ensurepip 被裁掉的发行版（部分精简镜像）建出来照样没 pip
+  if [[ $DRY_RUN -eq 0 ]] && ! venv_has_pip; then
+    run_sh "'$VENV/bin/python' -m ensurepip --upgrade" || true
+  fi
+}
+
 setup_venv() {
   [[ -n "$INDEX_URL" ]] && PIP_ARGS+=(-i "$INDEX_URL")
   [[ -n "$PROXY" ]] && PIP_ARGS+=(--proxy "$PROXY")
-  if [[ -x "$VENV/bin/python" ]]; then
+  # 只有 python 不算好的 venv：Debian 系的 python3-venv 没装全、上次安装
+  # 中断，都会留下一个没有 pip 的目录，后面每条 pip 命令都报
+  # "No module named pip"，还容易被当成网络问题反复重试。
+  if venv_has_pip; then
     ok "复用已有 venv"
-  else
-    log "创建 venv $VENV"
-    if ! run_sh "'$PYTHON' -m venv '$VENV'"; then
-      warn "venv 创建失败，补装 python3-venv 再试"
-      need_root_for_pkg
-      case "$PKG" in
-        apt-get) pkg_install python3-venv ;;
-        apk)     pkg_install py3-virtualenv ;;
-        *) ;;
-      esac
-      run_sh "'$PYTHON' -m venv '$VENV'"
+  elif [[ -x "$VENV/bin/python" ]]; then
+    warn "$VENV 里没有 pip（venv 不完整），用 ensurepip 补"
+    if ! run_sh "'$VENV/bin/python' -m ensurepip --upgrade --default-pip"; then
+      warn "补不上，删掉重建"
+      run_sh "rm -rf '$VENV'"
+      make_venv
     fi
+  else
+    make_venv
   fi
+  venv_has_pip || [[ $DRY_RUN -eq 1 ]] || die "venv 里仍然没有 pip，删掉 $VENV 重跑本脚本"
   run_sh "'$VENV/bin/pip' install -q -U pip setuptools wheel ${PIP_ARGS[*]:-}"
   local extras=""
   [[ $WITH_LOGIN_DEPS -eq 1 ]] && extras="[login]"

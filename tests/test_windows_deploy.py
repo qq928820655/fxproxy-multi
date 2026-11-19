@@ -123,6 +123,18 @@ def main():
     check("fxproxy-run" in ins or "schtasks" in ins.lower(),
           "install.ps1 处理了计划任务（-Autostart 的清理/注册）")
 
+    print("\n[win] 复用的 venv 必须真的能 pip")
+    # 只有 python.exe 就复用的旧逻辑会撞上「No module named pip」，
+    # 然后每条 pip 命令都报同一句，还容易被误判成网络问题去重试镜像。
+    check("function Test-VenvPip" in ins, "有 Test-VenvPip 检查 pip 可用")
+    check("-m pip --version" in ins, "用 python -m pip --version 判定")
+    check("ensurepip" in ins, "没有 pip 时先试 ensurepip 补")
+    check("删掉重建 .venv" in ins, "补不上就重建 venv")
+    check("venv 里没有 pip，无法安装依赖" in ins, "装依赖前还挡一道并给可执行结论")
+    check("winget install Python.Python.3.12" in ins, "给出换完整版 Python 的具体命令")
+    # 新建的 venv 也要验：精简版 Python 建出来就没有 pip
+    check(ins.count("Test-VenvPip $VenvPy") >= 3, "新建 / 复用 / 装依赖前都验过")
+
     print(f"\nPASS={PASS}  FAIL={FAIL}")
     return 1 if FAIL else 0
 

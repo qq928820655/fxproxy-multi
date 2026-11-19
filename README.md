@@ -190,6 +190,7 @@ Python ≥ 3.10。
 |---|---|
 | `dist/fxproxy-<版本>-win.zip` | Windows 全量包。解压 → 双击 `deploy\windows\install.bat` |
 | `dist/fxproxy-<版本>-linux.tar.gz` | Linux 全量包。解压 → `sudo ./deploy/linux/install.sh` |
+| `deploy/linux/bootstrap.sh` | 菜单式部署脚本本体，`curl \| bash` 用的就是它 |
 | `fxproxy-chrome-extension.zip` | 浏览器扩展，Chromium 内核「加载已解压的扩展程序」选解压目录 |
 | `fxproxy-chrome-extension.crx` | 同上的 CRX3 包（部分指纹浏览器只吃 CRX，装不上就用 zip） |
 
@@ -263,8 +264,34 @@ fxproxy web               # 或 python -m fxproxy web
 
 ### Linux —— 一键部署（推荐）
 
+最省事的一种，连包都不用自己下（脚本会挑当前平台该用的制品）：
+
 ```bash
-tar xzf fxproxy-0.3.2-linux.tar.gz && cd fxproxy-0.3.2
+curl -fsSL https://raw.githubusercontent.com/qq928820655/fxproxy-multi/main/deploy/linux/bootstrap.sh | bash
+```
+
+进去是个菜单：交互式安装 / 快速安装 / 只下载制品 / 升级 / 查状态 / 卸载。
+交互项包括安装目录、多个 refresh_token、出口国家、HTTP / SOCKS5 / 面板三个端口、
+监听地址、订阅里用的公网地址、pip 镜像、是否注册 systemd 开机自启、是否装完就启动。
+
+不想交互就带参数（适合批量）：
+
+```bash
+# 三台机器同一套配置
+curl -fsSL <上面的地址> | bash -s -- --yes --country US --token A,B,C --host 0.0.0.0
+
+# 内网慢，走镜像
+curl -fsSL <地址> | FXPROXY_GH_PROXY=https://ghproxy.net/ bash
+
+bash bootstrap.sh --help                      # 全部参数
+```
+
+它自己会按 Release tar.gz → 分支源码包 → git clone 的顺序取制品，都不用你管。
+
+已经下好包的话：
+
+```bash
+tar xzf fxproxy-0.4.0-linux.tar.gz && cd fxproxy-0.4.0
 sudo ./deploy/linux/install.sh --token 你的refresh_token --country US
 ```
 
@@ -292,6 +319,24 @@ fxproxy-ctl start | stop | restart | logs | update | url
 支持 Debian/Ubuntu（apt）、RHEL/Rocky/Alma/Fedora（dnf/yum）、Arch（pacman）、
 Alpine（apk）、openSUSE（zypper），x86_64 与 aarch64 都行；Python 需 ≥ 3.10。
 细节与故障排查见 [deploy/linux/README.md](deploy/linux/README.md)。
+
+### 升级（三种方式，任选）
+
+| 场景 | 做法 |
+|---|---|
+| 有面板 | `② 运行状态 → 版本 → 检查更新 → 一键更新` |
+| 无头 / SSH | `fxproxy update`（`--check` 只看，`-y` 免确认） |
+| 脚本化 | `fxproxy-ctl update`（git 部署走 pull，发行包部署重跑 install.sh） |
+
+面板更新会先查 GitHub Release，按当前系统取制品（Windows → `-win.zip`，Linux/macOS →
+`-linux.tar.gz`），下载校验后生成一个脱离面板进程的升级脚本：等 3 秒让页面收到响应 →
+停服务 → 备份代码 → 覆盖 → 重装依赖 → 重启。`config.json`、`.venv`、`.run` 全程不动，
+`.run/backup-<版本>.tar.gz` 可回滚，过程日志在 `.run/update.log`。
+
+国内直连 `api.github.com` 常被 reset，面板版本行下面有个「GitHub 代理」输入框，
+填 `http://127.0.0.1:7890` 这类地址即可（会存进配置的 `update_proxy`）。
+命令行等价物：`fxproxy update --proxy http://127.0.0.1:7890`，或
+`export FXPROXY_GH_PROXY=https://ghproxy.net/` 给下载地址套镜像前缀。
 
 ### macOS / Linux（手动）
 

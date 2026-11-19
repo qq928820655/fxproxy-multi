@@ -3,6 +3,42 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 上游基线：`c4ba254`（ios151/firefox）。
 
+## [0.4.0] — 2026-11-19
+
+### 新增
+
+- **面板一键更新**：`② 运行状态` 底部多了版本行 + 「检查更新 / 一键更新」。
+  - 查 GitHub 最新 Release，按当前系统挑制品：Windows 取 `-win.zip`，
+    Linux/macOS 取 `-linux.tar.gz`；制品名不对时会列出可用附件而不是干瞪眼
+  - 更新过程脱离当前进程跑（先等 HTTP 响应落地 → 停服务 → 备份 → 覆盖 →
+    重装依赖 → 重启），面板自己不会被"覆盖自己"卡死
+  - 只覆盖代码目录，`config.json`（凭证）、`.venv`、`.run` 一律不动；
+    顺手留一份 `backup-<版本>.tar.gz` 可回滚
+  - 面板里可填 GitHub 代理（`update_proxy`），国内直连不上时用它
+  - 部署方式自适应：git 仓库走 `git fetch + reset --hard`，发行包走 tar 覆盖
+- **`fxproxy update` 命令**：无头环境一条命令升级，`--check` 只看不升，
+  `-y` 免确认，`--proxy` 指定代理。
+- **`curl -fsSL … | bash` 菜单式部署**（`deploy/linux/bootstrap.sh`）：
+  - 管道执行时先把脚本体落盘再带 tty 重跑 —— 否则 `read` 读到的是管道尾巴，
+    菜单直接跳过
+  - 菜单：交互式安装 / 快速安装 / 只下载制品 / 升级 / 查状态 / 卸载
+  - 交互项覆盖安装目录、多账号 token、出口国家、三个端口、监听地址、
+    订阅公网地址、pip 镜像、是否 systemd 开机自启、是否立即启动
+  - 制品自动挑：Release tar.gz → 分支源码包 → git clone，三级回退；
+    `FXPROXY_GH_PROXY=https://ghproxy.net/` 走镜像
+  - 无参数进菜单，带参数直接装（适合批量）；未知参数立刻报错，不会先下载几十 MB
+
+### 修复
+
+- **`.venv` 有 python 没 pip 时反复重试镜像**（Windows `install.ps1`）：旧逻辑
+  只看 `Scripts\python.exe` 存在就复用，撞上被精简或装了一半的 venv 会一路
+  `No module named pip`，还提示"换镜像重试"，把真实原因埋掉。现在复用前先用
+  `python -m pip --version` 验一遍，缺 pip 先 `ensurepip` 补、补不上就删掉重建；
+  新建的 venv 也验，仍没有就给出换完整版 Python 的具体命令。Linux `install.sh`
+  同样处理（`python3-venv` 没装全的情况）。
+- 制品校验不再用文件大小当质量判据（内容重复度高的包压缩后可能只有几十字节），
+  改为只挡空响应，有效性交给归档结构解析（顶层唯一目录 + `pyproject.toml`）。
+
 ## [0.3.2] — 2026-11-19
 
 ### 新增

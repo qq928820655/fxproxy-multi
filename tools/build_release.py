@@ -145,7 +145,8 @@ def verify_tar(path: Path, top: str) -> tuple[bool, list[str]]:
     tops = {n.split("/", 1)[0] for n in names}
     if tops != {top}:
         problems.append(f"顶层目录不唯一：{sorted(tops)}")
-    for req in REQUIRED + ("deploy/linux/install.sh", "deploy/linux/fxproxy-ctl.sh"):
+    for req in REQUIRED + ("deploy/linux/install.sh", "deploy/linux/fxproxy-ctl.sh",
+                           "deploy/linux/bootstrap.sh"):
         if f"{top}/{req}" not in names:
             problems.append(f"缺 {req}")
     for m in members:

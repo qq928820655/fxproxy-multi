@@ -3,11 +3,47 @@
 ## 一条命令
 
 ```bash
-# 从发行包解压出来的目录里
-sudo ./deploy/linux/install.sh --token 你的refresh_token
+# 菜单式：连包都不用下，脚本自己挑当前平台的制品
+curl -fsSL https://raw.githubusercontent.com/qq928820655/fxproxy-multi/main/deploy/linux/bootstrap.sh | bash
+```
 
-# 直接从 git 拉（没解压过发行包时）
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/qq928820655/fxproxy-multi/main/deploy/linux/install.sh)"
+进去是菜单：
+
+```
+  1) 交互式安装        逐项配置端口/凭证/国家
+  2) 快速安装          默认端口，凭证稍后在面板加
+  3) 只下载制品        存到当前目录，拿去别的机器装
+  4) 升级已安装        拉最新版覆盖 + 重启
+  5) 查看状态          账号数、端口、出口
+  6) 卸载
+  0) 退出
+```
+
+交互项：安装目录、多个 `refresh_token`、出口国家、HTTP / SOCKS5 / 面板三个端口、
+监听地址、订阅公网地址、pip 镜像、是否注册 systemd 开机自启、是否装完就启动。
+端口填了但被占用时会提示「安装时自动顺延」，不会直接失败。
+
+不想交互就带参数，参数会原样交给 `install.sh`：
+
+```bash
+curl -fsSL <上面的地址> | bash -s -- --yes --country US --token A,B,C
+curl -fsSL <地址> | FXPROXY_GH_PROXY=https://ghproxy.net/ bash   # 走镜像
+bash bootstrap.sh --help                                        # 全部参数
+bash bootstrap.sh --uninstall [--purge]                         # 卸载
+```
+
+制品按「Release tar.gz → 分支源码包（codeload）→ git clone」三级回退取，
+哪一步通就用哪一步。
+
+> `curl | bash` 时脚本的 stdin 是管道，`read` 会读到管道尾部直接 EOF，菜单
+> 会一闪而过。所以 bootstrap 检测到脚本来自 stdin 时，会先把脚本体落到临时
+> 文件，再带 `/dev/tty` 重跑一遍。自己 `bash bootstrap.sh` 跑则没这层。
+
+## 从发行包装
+
+```bash
+tar xzf fxproxy-<ver>-linux.tar.gz && cd fxproxy-<ver>
+sudo ./deploy/linux/install.sh --token 你的refresh_token
 ```
 
 跑完会打印面板地址和 `fxproxy-ctl` 用法。凭证不给也行，装完在面板里加。
@@ -77,6 +113,21 @@ fxproxy-ctl uninstall [--purge]
 ```
 
 `status` 会顺手打一次 `/api/state`，直接看到账号数和是否在跑，不用开浏览器。
+
+## 升级
+
+```bash
+fxproxy update               # 查最新 Release，按平台取制品，覆盖后重启
+fxproxy update --check       # 只看当前版本和平台，不联网
+fxproxy update -y            # 不确认
+fxproxy update --proxy http://127.0.0.1:7890   # GitHub 连不上时走代理
+```
+
+和面板上的「一键更新」是同一套逻辑：下载 → 校验结构 → 生成脱离进程的升级脚本 →
+停服务 → 备份（`.run/backup-<版本>.tar.gz`）→ 覆盖 → `pip install -e` → 重启。
+`config.json` / `.venv` / `.run` 不动，日志写在 `.run/update.log`。
+
+git 部署的机器走 `git fetch + reset --hard`，发行包部署的走 tar 覆盖，脚本自己判断。
 
 ## 端口
 

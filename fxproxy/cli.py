@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import os
 import sys
+from pathlib import Path
 
 from . import config as cfgmod
 from .guardian import GuardianClient, NotEnrolledError, TokenPool
@@ -320,6 +322,57 @@ def cmd_web(args):
     return 0
 
 
+def cmd_update(args):
+    """无头环境的一条命令升级：查最新版、按平台取制品、替换并重启。"""
+    import asyncio as _aio
+
+    from . import updater as upd
+
+    if getattr(args, "current", False):
+        print(f"fxproxy {upd.VERSION}  ({upd.platform_label()} / {upd.asset_suffix()})")
+        return 0
+
+    inst = upd.detect_install()
+    if inst["kind"] == "unknown":
+        print("找不到可覆盖的源码目录（pip 装进 site-packages 的形态）。\n"
+              "用 deploy/linux/install.sh 或发行包重装一次，之后就能 fxproxy update。",
+              file=sys.stderr)
+        return 2
+    dest = Path(inst["root"])
+    proxy = getattr(args, "proxy", None) or os.environ.get("FXPROXY_UPDATE_PROXY") or None
+    gh_proxy = os.environ.get("FXPROXY_GH_PROXY") or None
+
+    async def _go():
+        rel = await upd.fetch_latest(proxy=proxy)
+        asset = upd.pick_asset(rel["assets"], rel["tag"], upd.platform_tag())
+        newest = upd.is_newer(rel["version"], upd.VERSION)
+        print(f"当前 {upd.VERSION}  最新 {rel['version']}  "
+              f"平台 {upd.platform_label()}  制品 {(asset or {}).get('name', '（无匹配）')}")
+        if not newest:
+            print("已是最新。")
+            return 0
+        if not asset:
+            print(f"{rel['tag']} 里没有本平台制品，可用："
+                  f"{', '.join(a['name'] for a in rel['assets']) or '无'}", file=sys.stderr)
+            return 1
+        if not getattr(args, "yes", False):
+            ans = input(f"升级到 {rel['version']} 并重启服务？[y/N] ").strip().lower()
+            if ans not in ("y", "yes"):
+                print("取消。")
+                return 0
+        cfg_path = Path(args.config) if getattr(args, "config", None) else cfgmod.DEFAULT_PATH
+        info = await upd.run_update(
+            dest, cfg_path, rel["tag"], asset, proxy=proxy, gh_proxy=gh_proxy,
+            web_host=getattr(args, "web_host", "127.0.0.1"),
+            web_port=getattr(args, "web_port", 8765),
+        )
+        print(f"已启动升级进程 pid={info['pid']}，日志：{info['log']}")
+        print("面板/代理会短暂断开，10~30 秒后自动回来；`fxproxy-ctl status` 可确认。")
+        return 0
+
+    return asyncio.run(_go())
+
+
 def build_parser() -> argparse.ArgumentParser:
     from . import __version__
 
@@ -379,6 +432,13 @@ def build_parser() -> argparse.ArgumentParser:
     wp.add_argument("--no-open", action="store_true", help="don't auto-open a browser")
     wp.set_defaults(func=cmd_web)
 
+    up = sub.add_parser("update", help="升级到最新发行版（按平台自动选制品）")
+    up.add_argument("-y", "--yes", action="store_true", help="不确认，直接升")
+    up.add_argument("--check", dest="current", action="store_true",
+                    help="只打印当前版本与平台，不联网")
+    up.add_argument("--proxy", help="访问 GitHub 用的代理，如 http://127.0.0.1:7890")
+    up.set_defaults(func=cmd_update)
+
     # -c/--config 两个位置都接受：顶层（fxproxy -c X run）和子命令后（fxproxy run -c X）。
     # 子命令这份用 SUPPRESS 缺省，没写就不会覆盖顶层已经解析出来的值。
     for _sp in sub.choices.values():
@@ -404,8 +464,9 @@ def interactive(config_path=None):
         print("  6) 可视化控制面板 (web)")
         print("  7) 显示 refresh_token (拷到服务器用)")
         print("  8) 导出 Clash/Mihomo 订阅 (export-clash)")
-        print("  9) 退出")
-        choice = input("选择指令 [1-9]: ").strip()
+        print("  9) 升级到最新版 (update)")
+        print("  10) 退出")
+        choice = input("选择指令 [1-10]: ").strip()
         try:
             if choice == "1":
                 mode = _prompt("凭证方式: 1=邮箱密码  2=sessionToken  3=Cookie/插件导出", "1")
@@ -459,7 +520,11 @@ def interactive(config_path=None):
                 a.server = _prompt("客户端访问代理的 IP/域名(留空=127.0.0.1)", "") or None
                 a.output = _prompt("输出文件(留空=打印到屏幕)", "") or None
                 cmd_export_clash(a)
-            elif choice in ("9", "q", "quit", "exit"):
+            elif choice == "9":
+                a = argparse.Namespace(config=config_path, yes=False, current=False,
+                                       proxy=None, web_host="127.0.0.1", web_port=8765)
+                cmd_update(a)
+            elif choice in ("10", "q", "quit", "exit"):
                 print("bye")
                 return 0
             else:

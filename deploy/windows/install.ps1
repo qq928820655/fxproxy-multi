@@ -201,20 +201,57 @@ $VenvPy = Join-Path $Venv "Scripts\python.exe"
 $pyShort = (& $py.Exe @($py.Args + @("-c", "import sys;print('%d.%d'%sys.version_info[:2])")) 2>$null | Select-Object -First 1)
 $pyShort = ([string]$pyShort).Trim()
 
+# 光有 python.exe 不算好的 venv：微软商店版 Python、被精简过的发行版、
+# 或者上一次安装中断，都会留下一个没有 pip 的 .venv，后面每一步都报
+# "No module named pip"，而重试循环只会把这个错重复三遍。
+function Test-VenvPip([string]$Vpy) {
+    if (-not (Test-Path $Vpy)) { return $false }
+    & $Vpy -m pip --version *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
 if (Test-Path $VenvPy) {
     $venvShort = ""
     try { $venvShort = ([string](& $VenvPy -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null | Select-Object -First 1)).Trim() } catch { }
     if ($venvShort -and $venvShort -ne $pyShort) {
         Warn "已有 venv 是 Python $venvShort，当前选中 $pyShort，重建（旧 venv 删掉）"
-        Remove-Item -Recurse -Force $Venv
+        Remove-Item -Recurse -Force $Venv -ErrorAction SilentlyContinue
     }
 }
 
-if (Test-Path $VenvPy) {
-    Ok "已存在，复用"
-} else {
+$needCreate = -not (Test-Path $VenvPy)
+if (-not $needCreate) {
+    if (Test-VenvPip $VenvPy) {
+        Ok "已存在，复用"
+    } else {
+        Warn "已有 .venv 里没有 pip（venv 不完整），先用 ensurepip 补"
+        & $VenvPy -m ensurepip --upgrade --default-pip *> $null
+        if (Test-VenvPip $VenvPy) {
+            Ok "已补上 pip"
+        } else {
+            Warn "补不上，删掉重建 .venv"
+            Remove-Item -Recurse -Force $Venv -ErrorAction SilentlyContinue
+            $needCreate = $true
+        }
+    }
+}
+
+if ($needCreate) {
     & $py.Exe @($py.Args + @("-m", "venv", $Venv))
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $VenvPy)) { Die "创建 venv 失败" }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $VenvPy)) {
+        Die "创建 venv 失败：$($py.Exe) -m venv 返回 $LASTEXITCODE（换 -Python 'py -3.12' 试试）"
+    }
+    if (-not (Test-VenvPip $VenvPy)) {
+        & $VenvPy -m ensurepip --upgrade --default-pip *> $null
+    }
+    if (-not (Test-VenvPip $VenvPy)) {
+        Die @"
+新建的 venv 里没有 pip，说明这个 Python 装不出 pip（常见于微软商店版 / 精简版）。
+换一个完整版 Python 3.10~3.13 再跑：
+    winget install Python.Python.3.12
+    install.bat -Python "py -3.12"
+"@
+    }
     Ok "已创建 $Venv（Python $pyShort）"
 }
 
@@ -241,6 +278,12 @@ if ($Proxy) { $pipCommon += @("--proxy", $Proxy) }
 
 $pipSrc = @()
 if ($IndexUrl) { $pipSrc = @("-i", $IndexUrl) }
+
+# 走到这里还没有 pip 就别往下跑了：后面每条命令都会报同一句
+# "No module named pip"，再套上"换镜像重试"只会把真实原因埋掉。
+if (-not (Test-VenvPip $VenvPy)) {
+    Die "venv 里没有 pip，无法安装依赖。删掉 $Venv 后重跑 install.bat，或用 -Uninstall 清干净再装。"
+}
 
 # 装一组包；默认源失败时自动回退清华镜像再来一次
 function Pip-Install([string[]]$Targets, [string]$Label) {
