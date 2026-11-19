@@ -591,9 +591,10 @@ async function loadAccounts(){
     });
     $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无账号</td></tr>';
     const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
-    // Firefox 免费账号不扣额度（used 恒为 0），优先展示本地计量的真实用量
+    // Firefox 一旦报告真实用量就以它为准；不计量（免费账号恒 0）时才用本地观测兜底
     const localUsed = d.local_used_bytes||0;
-    const usedShown = (localUsed>0) ? localUsed : d.total_used_bytes;
+    const ffUsed = d.total_used_bytes;
+    const usedShown = (ffUsed!=null && ffUsed>0) ? ffUsed : localUsed;
     $("totalRemain").textContent = d.unlimited ? "不限量"
       : ((usedShown!=null && d.total_max_bytes!=null)
          ? "已用 "+fmt(usedShown)+" / "+fmt(d.total_max_bytes)
@@ -2255,8 +2256,10 @@ class Panel:
         unix timestamp (0 = no expiry). ``total=0`` is rendered as unlimited by
         the clients, which matches accounts with no cap.
 
-        Firefox 免费账号的 x-quota 头始终返回满额（不会扣减），所以优先用
-        本地按转发字节累计的用量；本地为 0 时才回落到 Firefox 的 used。
+        Firefox 免费账号的 x-quota 头始终返回满额（不会扣减）。逻辑：
+        Firefox 一旦报告真实用量（used>0）就以它为准——它涵盖该账号所有
+        客户端，是额度的权威来源；只有当 Firefox 不计量（used 恒为 0）时，
+        才用本地按转发字节累计的观测值兜底。
         """
         if self.pool is None:
             return None
@@ -2275,10 +2278,13 @@ class Panel:
         ff_used = int(ff_used or 0)
         local_up = int(self._traffic.get("up", 0))
         local_down = int(self._traffic.get("down", 0))
-        if local_up or local_down:
+        if ff_used > 0:
+            # Firefox 已扣减：以权威值为准，不再叠加本地观测，避免重复计数
+            upload, download = 0, ff_used
+        elif local_up or local_down:
             upload, download = local_up, local_down
         else:
-            upload, download = 0, ff_used
+            upload, download = 0, 0
         return (f"upload={upload}; download={download}; "
                 f"total={int(total)}; expire=0")
 
