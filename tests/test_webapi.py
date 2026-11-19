@@ -4,6 +4,7 @@
 """
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import types
@@ -181,6 +182,29 @@ async def main():
             check("type: http" in y and "type: socks5" in y, "订阅含 HTTP+SOCKS5 节点")
             check("127.0.0.1" in y and "port: 8080" in y, "订阅节点指向本地代理端口")
             check(r.headers.get("Content-Type", "").startswith("text/yaml"), "订阅 Content-Type 正确")
+
+        # 容器部署：env 注入公网入口后，订阅必须指向公网地址与映射端口。
+        print("[api] clash.yaml 走 env 公网入口")
+        os.environ.update({
+            "FXPROXY_SUB_SERVER": "198.51.100.7",
+            "FXPROXY_SUB_HTTP_PORT": "18080",
+            "FXPROXY_SUB_SOCKS_PORT": "11080",
+        })
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                cfgpath = Path(d) / "sub.json"
+                cfgpath.write_text(json.dumps({"refresh_tokens": ["tokA"]}), encoding="utf-8")
+                pp = Panel(str(cfgpath))
+                app2 = web.Application()
+                app2.router.add_get("/clash.yaml", pp.api_clash)
+                async with TestClient(TestServer(app2)) as c2:
+                    y2 = await (await c2.get("/clash.yaml")).text()
+                check('server: "198.51.100.7"' in y2, "env 订阅 server 覆盖 Host 头")
+                check("port: 18080" in y2 and "port: 11080" in y2, "env 订阅端口覆盖")
+                check("127.0.0.1" not in y2, "env 订阅不含本地地址")
+        finally:
+            for k in ("FXPROXY_SUB_SERVER", "FXPROXY_SUB_HTTP_PORT", "FXPROXY_SUB_SOCKS_PORT"):
+                os.environ.pop(k, None)
 
     # 回归：全新安装（账号池为空）时 cookie 导入不能抛 TokenPool 空列表错误
     print("[api] 空账号池首次 cookie 导入（回归）")

@@ -24,6 +24,11 @@ DEFAULTS = {
     "http_port": 8080,
     "socks_port": 1080,
     "failover": 3,                # nodes to try per connection before giving up
+    # 订阅里给客户端用的地址/端口。容器或 VPS 部署时客户端在公网，
+    # 不能填 127.0.0.1；这三项由 FXPROXY_SUB_* 环境变量注入。
+    "sub_server": "",             # 空 = 用请求 Host 推导（仅本地/局域网直连用）
+    "sub_http_port": 0,           # 0 = 跟随 http_port
+    "sub_socks_port": 0,          # 0 = 跟随 socks_port
 }
 
 _VALID_STRATEGIES = ("round-robin", "quota", "failover")
@@ -67,6 +72,44 @@ def load(path: Path | None = None) -> dict:
             cfg["refresh_tokens"].remove(env_one)
         cfg["refresh_tokens"].insert(0, env_one)
     cfg["refresh_token"] = cfg["refresh_tokens"][0] if cfg["refresh_tokens"] else ""
+
+    # ---- 监听参数 / 出口国家环境变量覆盖（无配置文件部署）----
+    env_host = os.environ.get("FXPROXY_HOST")
+    if env_host and env_host.strip():
+        cfg["host"] = env_host.strip()
+    for key, envkey in (("http_port", "FXPROXY_HTTP_PORT"),
+                        ("socks_port", "FXPROXY_SOCKS_PORT"),
+                        ("failover", "FXPROXY_FAILOVER")):
+        raw = os.environ.get(envkey)
+        if raw and raw.strip():
+            try:
+                cfg[key] = int(raw.strip())
+            except (TypeError, ValueError):
+                pass
+    env_country = os.environ.get("FXPROXY_COUNTRY")
+    if env_country and env_country.strip():
+        cfg["country"] = env_country.strip().upper()
+    env_strategy = os.environ.get("FXPROXY_POOL_STRATEGY")
+    if env_strategy and env_strategy.strip() in _VALID_STRATEGIES:
+        cfg["pool_strategy"] = env_strategy.strip()
+
+    # ---- 订阅公网入口（容器/VPS 部署关键）----
+    # 优先级：环境变量 > 配置文件 > 默认值；端口回退到实际监听端口。
+    env_sub = os.environ.get("FXPROXY_SUB_SERVER")
+    if env_sub and env_sub.strip():
+        cfg["sub_server"] = env_sub.strip()
+    for key, envkey, fallback in (
+        ("sub_http_port", "FXPROXY_SUB_HTTP_PORT", "http_port"),
+        ("sub_socks_port", "FXPROXY_SUB_SOCKS_PORT", "socks_port"),
+    ):
+        raw = os.environ.get(envkey)
+        if raw and raw.strip():
+            try:
+                cfg[key] = int(raw.strip())
+            except (TypeError, ValueError):
+                pass  # 非法值忽略，走配置文件/回退
+        if not cfg.get(key):
+            cfg[key] = cfg.get(fallback, 8080 if key == "sub_http_port" else 1080)
 
     if cfg.get("pool_strategy") not in _VALID_STRATEGIES:
         cfg["pool_strategy"] = "round-robin"

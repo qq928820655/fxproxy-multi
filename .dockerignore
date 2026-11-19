@@ -1,0 +1,14 @@
+.git
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+config.json
+*.local.json
+.env
+fxproxy-chrome-extension/
+fxproxy-chrome-extension.zip
+tests/
+docs/
+README.md

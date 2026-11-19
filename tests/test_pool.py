@@ -146,8 +146,73 @@ def test_quota_not_falsely_unlimited():
     check(s["unlimited"] is False, "summary unlimited 全真才真")
 
 
+def test_env_deployment_overrides():
+    """容器/VPS 部署：全靠 FXPROXY_* 环境变量，无 config.json 也要能跑。"""
+    print("[config] 容器环境变量覆盖（无配置文件）")
+    keys = ["FXPROXY_REFRESH_TOKENS", "FXPROXY_REFRESH_TOKEN", "FXPROXY_HOST",
+            "FXPROXY_HTTP_PORT", "FXPROXY_SOCKS_PORT", "FXPROXY_COUNTRY",
+            "FXPROXY_POOL_STRATEGY", "FXPROXY_SUB_SERVER",
+            "FXPROXY_SUB_HTTP_PORT", "FXPROXY_SUB_SOCKS_PORT", "FXPROXY_FAILOVER"]
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        for k in keys:
+            os.environ.pop(k, None)
+        os.environ.update({
+            "FXPROXY_REFRESH_TOKENS": "t1,t2",
+            "FXPROXY_HOST": "0.0.0.0",
+            "FXPROXY_HTTP_PORT": "18080",
+            "FXPROXY_SOCKS_PORT": "11080",
+            "FXPROXY_COUNTRY": "de",
+            "FXPROXY_POOL_STRATEGY": "quota",
+            "FXPROXY_SUB_SERVER": "203.0.113.9",
+            "FXPROXY_SUB_HTTP_PORT": "18080",
+            "FXPROXY_SUB_SOCKS_PORT": "11080",
+            "FXPROXY_FAILOVER": "5",
+        })
+        cfg = cfgmod.load("/nonexistent/path/config.json")
+        check(cfg["refresh_tokens"] == ["t1", "t2"], "env token 列表")
+        check(cfg["host"] == "0.0.0.0", "env 监听地址")
+        check(cfg["http_port"] == 18080 and cfg["socks_port"] == 11080, "env 监听端口")
+        check(cfg["country"] == "DE", "env 出口国家大写归一")
+        check(cfg["pool_strategy"] == "quota", "env 调度策略")
+        check(cfg["failover"] == 5, "env failover")
+        check(cfg["sub_server"] == "203.0.113.9", "env 订阅公网地址")
+        check(cfg["sub_http_port"] == 18080 and cfg["sub_socks_port"] == 11080,
+              "env 订阅公网端口")
+
+        # 端口未显式给时回退到实际监听端口
+        os.environ.pop("FXPROXY_SUB_HTTP_PORT", None)
+        os.environ.pop("FXPROXY_SUB_SOCKS_PORT", None)
+        cfg2 = cfgmod.load("/nonexistent/path/config.json")
+        check(cfg2["sub_http_port"] == cfg2["http_port"], "订阅端口回退到监听端口")
+
+        # 非法 env 端口忽略，不把程序带崩
+        os.environ["FXPROXY_SUB_HTTP_PORT"] = "not-a-port"
+        cfg3 = cfgmod.load("/nonexistent/path/config.json")
+        check(cfg3["sub_http_port"] == cfg3["http_port"], "非法 env 端口被忽略")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_subscription_uses_public_entry():
+    """订阅 YAML 的 server/port 必须取公网入口，而非监听地址。"""
+    print("[clashconf] 订阅使用公网入口")
+    from fxproxy import clashconf
+    yaml = clashconf.build_clash_yaml(
+        server="203.0.113.9", http_port=18080, socks_port=11080)
+    check('server: "203.0.113.9"' in yaml, "订阅 server = 公网地址")
+    check("port: 18080" in yaml and "port: 11080" in yaml, "订阅端口 = 公网映射端口")
+    check("127.0.0.1" not in yaml, "订阅里不出现 127.0.0.1")
+
+
 if __name__ == "__main__":
     test_config_migration()
+    test_env_deployment_overrides()
+    test_subscription_uses_public_entry()
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()

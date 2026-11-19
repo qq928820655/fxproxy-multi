@@ -429,6 +429,95 @@ journalctl -u fxproxy@$USER -f
 - 若要对外开放代理端口，`host` 设 `0.0.0.0` 并配防火墙/鉴权——本工具自身不做认证。
 - 代理只走 TCP；UDP 不转发。
 
+## 免费容器 / 云主机部署 + 公网订阅
+
+先说结论：**GitHub Codespaces / GitHub Actions 这类"git 免费容器"做不了稳定的代理出口**。原因不是配额，是协议：
+
+- Codespaces 的端口转发是 HTTP L7 反向代理，靠 `Host` 头路由，只吃 HTTP；本项目的代理是 HTTP CONNECT + SOCKS5 裸 TCP，转发层直接拒。
+- 空闲 30 分钟自动休眠，最长生命周期 12 小时，转发域名每次重启都变——订阅地址今天有效明天就废。
+- Free 账户每月 120 core-hours（2 核机约 60 小时），跑满即停。
+- Actions 是短任务容器，跑完销毁，不是常驻服务。
+
+能真正免费落地、且能生成固定订阅地址的有两条路，都要求**有公网 IPv4 + 常驻进程**：
+
+| 路径 | 免费额度 | 公网 IPv4 | 适合 |
+|------|----------|-----------|------|
+| Oracle Cloud Always Free | ARM 4C/24G 或 AMD 1C/1G，永久免费 | 有 | 长期常驻，最省 |
+| 任意 VPS / 容器平台（给 TCP 端口的） | 看平台 | 有 | 已有机器直接用 |
+
+Cloudflare Workers / Render 免费层 / Zeabur 等只有 HTTP 入口或会休眠，同样过不了 CONNECT，不在此列。
+
+### 凭证从哪来
+
+机房 IP 拿不到 Mozilla 的登录凭证（`/account/login` 对机房 IP 返回 406）。流程固定是：
+
+1. **住宅 IP**（家里宽带/手机）上用插件或 `fxproxy login` 取 `refresh_token`
+2. token 本身不绑 IP，搬到机房/容器照常用
+
+### 路径 A：Oracle Always Free 一键脚本
+
+在 Oracle 控制台建一台 Ubuntu 24.04 ARM 实例（Always Free），安全组 ingress 放行 `8080/1080/8765`，SSH 上去：
+
+```bash
+# 住宅 IP 上先把 token 取好，复制到这里
+export FXPROXY_REFRESH_TOKENS="TOKEN1,TOKEN2"
+
+# 需 root 写 /etc + systemd；-E 保留环境变量
+sudo -E bash deploy/oracle-free-bootstrap.sh --country US
+```
+
+脚本自动：装依赖 → clone 仓库 → 建 venv → 探测公网 IP → 写 `/etc/fxproxy.env`(600) → 注册 `fxproxy` + `fxproxy-web` 两个 systemd unit → 放行系统防火墙 → 打印订阅地址。
+
+完成后输出：
+
+```
+订阅地址:  http://<公网IP>:8765/clash.yaml
+```
+
+**别忘控制台安全组也要放行那三个端口**，只改系统防火墙外网仍连不上。
+
+```bash
+systemctl status fxproxy fxproxy-web     # 状态
+journalctl -u fxproxy -f                 # 日志
+```
+
+### 路径 B：Docker / docker-compose
+
+有 Docker 的机器上，凭证和公网地址全走环境变量，镜像里不含任何凭证：
+
+```bash
+export FXPROXY_REFRESH_TOKENS="TOKEN1,TOKEN2"
+export FXPROXY_SUB_SERVER="1.2.3.4"     # 你的公网 IP 或域名
+
+docker compose up -d --build            # 起代理(8080/1080) + 面板(8765)
+docker compose logs -f
+```
+
+`docker-compose.yml` 里 `ports` 左边是宿主机端口。改左边时，**必须同步改 `FXPROXY_SUB_HTTP_PORT` / `FXPROXY_SUB_SOCKS_PORT`**，否则订阅里的端口指向错误。
+
+### 拿订阅地址
+
+两条路径都一样：
+
+- 面板底部「订阅地址」：`http://<公网IP>:8765/clash.yaml`，填进 Clash/Mihomo 的订阅链接
+- 或命令行直接导出：`fxproxy export-clash -o fxproxy.yaml`
+
+关键环境变量（容器内也走这套，无需 config.json）：
+
+```bash
+FXPROXY_REFRESH_TOKENS="t1,t2"   # 必填，多 token 逗号分隔
+FXPROXY_HOST=0.0.0.0             # 对外监听，默认 127.0.0.1
+FXPROXY_SUB_SERVER="1.2.3.4"     # 订阅里的 server：公网 IP/域名
+FXPROXY_SUB_HTTP_PORT=8080       # 订阅里的 HTTP 端口（对外映射端口）
+FXPROXY_SUB_SOCKS_PORT=1080      # 订阅里的 SOCKS5 端口
+FXPROXY_COUNTRY=US               # 出口国家
+FXPROXY_POOL_STRATEGY=round-robin
+```
+
+不设 `FXPROXY_SUB_*` 时，`/clash.yaml` 用请求 Host 头推导 server（本地/局域网直连可用）；公网部署必须设，否则订阅里的 `127.0.0.1` 指向客户端自己。
+
+订阅内容仍是两个本地节点（HTTP/SOCKS5），账号轮换和节点故障切换都在 fxproxy 内部做，客户端只看到这两个入口。
+
 ## 安全提示
 
 - 默认只监听 `127.0.0.1`；若要对外/当公共落地，请自行加认证或防火墙（本工具不做鉴权）。
@@ -446,5 +535,8 @@ journalctl -u fxproxy@$USER -f
 | `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口、cookie 导入 |
 | `fxproxy/cli.py`         | 命令行入口（login / accounts / status / token / servers / run / web） |
 | `fxproxy/geo.py`         | 国家代码 → 中文名/洲域映射，节点下拉分组与 CLI servers 用 |
+| `Dockerfile` / `docker-compose.yml` | 容器部署：env 注入凭证，起代理 + 面板，公网订阅 |
+| `deploy/container_entry.py` | 容器入口：无 supervisord 依赖同时托管代理与面板 |
+| `deploy/oracle-free-bootstrap.sh` | Oracle Always Free 一键部署（venv + systemd + 防火墙 + 订阅） |
 | `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken，六种格式导出 |
 | `chrome-extension/formats.js` | 六种导出格式（JSON/lines/cookie/netscape/csv/accounts）的纯函数实现 |

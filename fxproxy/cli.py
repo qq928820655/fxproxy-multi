@@ -289,8 +289,8 @@ def cmd_export_clash(args):
         server = "127.0.0.1"
     text = clashconf.build_clash_yaml(
         server=server,
-        http_port=args.http_port or cfg.get("http_port", 8080),
-        socks_port=args.socks_port or cfg.get("socks_port", 1080),
+        http_port=args.http_port or cfg.get("sub_http_port") or cfg.get("http_port", 8080),
+        socks_port=args.socks_port or cfg.get("sub_socks_port") or cfg.get("socks_port", 1080),
     )
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:

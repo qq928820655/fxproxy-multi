@@ -1,0 +1,32 @@
+# 部署到有公网 IPv4 的机器（Oracle Always Free / 任意 VPS）。
+# 凭证在住宅 IP 上取好后，用环境变量注入；不写进镜像、不落盘 config.json。
+services:
+  fxproxy:
+    build: .
+    image: fxproxy-multi:local
+    container_name: fxproxy
+    restart: unless-stopped
+    ports:
+      # 左 = 宿主机公网端口，右 = 容器内监听端口。
+      # 改左边时，SUB_HTTP_PORT / SUB_SOCKS_PORT 必须同步改成左边的值，
+      # 否则订阅里的端口指向错误。
+      - "8080:8080"   # HTTP 代理
+      - "1080:1080"   # SOCKS5
+      - "8765:8765"   # 控制面板 + /clash.yaml 订阅
+    environment:
+      # 必填：住宅 IP 取到的 refresh_token，多个用逗号分隔
+      FXPROXY_REFRESH_TOKENS: "${FXPROXY_REFRESH_TOKENS:?set FXPROXY_REFRESH_TOKENS first}"
+      # 出口国家（US/GB/DE...），留空=任意
+      FXPROXY_COUNTRY: "${FXPROXY_COUNTRY:-US}"
+      FXPROXY_POOL_STRATEGY: "${FXPROXY_POOL_STRATEGY:-round-robin}"
+      # 订阅入口：填宿主机公网 IP 或域名。客户端导入订阅只会连这个地址。
+      FXPROXY_SUB_SERVER: "${FXPROXY_SUB_SERVER:?set FXPROXY_SUB_SERVER to your public IP/domain}"
+      FXPROXY_SUB_HTTP_PORT: "${FXPROXY_SUB_HTTP_PORT:-8080}"
+      FXPROXY_SUB_SOCKS_PORT: "${FXPROXY_SUB_SOCKS_PORT:-1080}"
+      FXPROXY_FAILOVER: "${FXPROXY_FAILOVER:-3}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/state', timeout=5)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 20s

@@ -671,8 +671,8 @@ class Panel:
         server = self.cfg.get("sub_server") or host
         text = clashconf.build_clash_yaml(
             server=server,
-            http_port=self.cfg.get("http_port", 8080),
-            socks_port=self.cfg.get("socks_port", 1080),
+            http_port=self.cfg.get("sub_http_port") or self.cfg.get("http_port", 8080),
+            socks_port=self.cfg.get("sub_socks_port") or self.cfg.get("socks_port", 1080),
         )
         return web.Response(
             text=text,
