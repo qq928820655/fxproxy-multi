@@ -94,6 +94,7 @@ async def main():
             web.get("/api/config", panel.api_config),
             web.get("/api/servers", panel.api_servers),
             web.get("/api/nodes", panel.api_nodes),
+            web.post("/api/nodes/disable", panel.api_node_disable),
             web.post("/api/start", panel.api_start),
             web.post("/api/ports", panel.api_ports),
             web.get("/clash.yaml", panel.api_clash),
@@ -194,6 +195,21 @@ async def main():
             check(stu.get("runtime_user_agent") == "firefox", "state 暴露 UA 设置")
             r = await cli.post("/api/runtime-ua", json={"enabled": False})
             check((await r.json()).get("runtime_user_agent") == "", "可再次关闭")
+
+            print("[api] 节点禁用")
+            check(cfgmod.load(cfgpath).get("disabled_nodes") == [], "默认无禁用节点")
+            r = await cli.post("/api/nodes/disable",
+                               json={"host": "a", "disabled": True})
+            dd = await r.json()
+            check(dd.get("ok") and dd.get("disabled") is True, "禁用节点返回 ok")
+            check("a" in cfgmod.load(cfgpath).get("disabled_nodes", []), "禁用已落盘")
+            nodes = (await (await cli.get("/api/nodes")).json())["nodes"]
+            na = next(n for n in nodes if n["host"] == "a")
+            check(na.get("disabled") is True, "api_nodes 标记禁用节点")
+            r = await cli.post("/api/nodes/disable",
+                               json={"host": "a", "disabled": False})
+            check("a" not in cfgmod.load(cfgpath).get("disabled_nodes", []),
+                  "可再次启用节点")
 
             print("[api] login --append 语义")
             r = await cli.post("/api/login", json={"mode": "token", "refresh_token": "tokC"})

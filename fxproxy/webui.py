@@ -143,6 +143,7 @@ PAGE = r"""<!doctype html>
   .tab.on { color:#58a6ff; background:#0d1117; border-color:#21262d; position:relative; top:1px; font-weight:600; }
   /* 面板块隐藏用 !important：#loginCard 自身还有内联 display，不能让它压过 tab 切换 */
   [data-pane][hidden] { display:none !important; }
+  .proxyaddr .pa { display:inline-block; margin-right:16px; }
   @media (max-width:600px) {
     .tab { padding:8px 12px; font-size:13px; }
     /* 手机上 6 列的账号表会把页面撑出屏幕（整页左右滚），改成一行一张卡 */
@@ -185,6 +186,8 @@ PAGE = r"""<!doctype html>
     table.nodes td.nhost .muted { margin:0 0 0 6px; font-size:11px; }
     table.nodes td.nact { display:flex; gap:8px; padding-top:8px; }
     table.nodes td.nact button { flex:1 1 0; }
+    /* 移动端把 HTTP / SOCKS5 分成两行显示 */
+    .proxyaddr .pa { display:block; margin-right:0; line-height:1.8; }
   }
 </style>
 </head>
@@ -244,8 +247,10 @@ PAGE = r"""<!doctype html>
     </div>
     <div style="border-top:1px solid #21262d;margin-top:14px;padding-top:12px;">
       <div class="muted">在浏览器 / 系统里把代理设为：</div>
-      <div style="margin-top:6px;">HTTP：<code id="httpAddr">127.0.0.1:8080</code>　
-          SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></div>
+      <div class="proxyaddr" style="margin-top:6px;">
+        <span class="pa">HTTP：<code id="httpAddr">127.0.0.1:8080</code></span>
+        <span class="pa">SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></span>
+      </div>
       <div class="muted" style="font-size:12px;margin-top:4px;">
         两个是同一后端的两个入口，任选其一：浏览器 / 系统代理 / 指纹浏览器填
         <b>HTTP <span id="httpPortTxt">8080</span></b>；
@@ -511,11 +516,15 @@ function renderNodeRows(){
     arr.sort((a,b)=>{
       const ua=_sortUnknown(a,SORT.key), ub=_sortUnknown(b,SORT.key);
       if(ua!==ub) return ua?1:-1;
+      // 禁用节点始终排在启用节点之后
+      if(!!a.disabled !== !!b.disabled) return a.disabled?1:-1;
       const va=_sortVal(a,SORT.key), vb=_sortVal(b,SORT.key);
       let c = (typeof va==="string") ? va.localeCompare(vb,"zh-Hans")
                                      : (va<vb?-1:va>vb?1:0);
       return c*SORT.dir;
     });
+  } else {
+    arr.sort((a,b)=> (a.disabled?1:0)-(b.disabled?1:0));
   }
   const probe = NODE_PROBE;
   const rows = arr.map(n => {
@@ -528,11 +537,16 @@ function renderNodeRows(){
         : `<td data-l="带宽"><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
     }
     const cur = (n.host === CURRENT_NODE);
+    const off = !!n.disabled;
     const ipLine = n.egress_ip ? `<div class="muted" style="font-size:11px;">出口 ${n.egress_ip}</div>` : '';
-    return `<tr${cur?' style="background:#123329;"':''}><td class="nname">${n.name}${cur?' <span class="pill on">当前</span>':''}</td>`+
+    const offPill = off ? ' <span class="pill off">已禁用</span>' : '';
+    const rowStyle = off ? ' style="opacity:.45;"'
+                         : (cur ? ' style="background:#123329;"' : '');
+    return `<tr${rowStyle}><td class="nname">${n.name}${cur?' <span class="pill on">当前</span>':''}${offPill}</td>`+
       `<td class="nhost">${n.host}${ipLine}</td><td data-l="端口">${n.port}</td>${lat}${bw}`+
-      `<td class="nact"><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
-      `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button></td></tr>`;
+      `<td class="nact"><button class="sm primary" ${off?'disabled':''} onclick="useNode('${n.host}')">设为出口</button> `+
+      `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button> `+
+      `<button class="sm" onclick="toggleNode('${n.host}', ${off?'false':'true'})">${off?'启用':'禁用'}</button></td></tr>`;
   });
   body.innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无节点</td></tr>';
   document.querySelectorAll("th.sortable").forEach(th=>{
@@ -546,6 +560,22 @@ function sortNodes(key){
   if(SORT.key===key) SORT.dir = -SORT.dir;
   else { SORT.key = key; SORT.dir = 1; }
   renderNodeRows();
+}
+function updateNodeCount(){
+  const off = NODE_DATA.filter(n=>n.disabled).length;
+  $("nodeCount").textContent = "("+NODE_DATA.length+" 个"+(off?("，禁用 "+off):"")+")";
+}
+async function toggleNode(host, disabled){
+  $("probeMsg").textContent = (disabled?"禁用 ":"启用 ")+host+" …";
+  const r = await fetch("/api/nodes/disable",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({host:host, disabled:disabled})});
+  const d = await r.json();
+  if(d.error){ $("probeMsg").textContent = "失败："+d.error; return; }
+  const n = NODE_DATA.find(x=>x.host===host);
+  if(n) n.disabled = disabled;
+  renderNodeRows(); updateNodeCount();
+  $("probeMsg").textContent = (disabled?"已禁用 ":"已启用 ")+host+"（订阅同步生效）";
 }
 async function loadNodes(probe, egress){
   const btn = $("probeBtn"), ebtn = $("egressBtn"), body = $("nodeBody");
@@ -561,7 +591,7 @@ async function loadNodes(probe, egress){
     if(d.error){ body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
     NODE_DATA = d.nodes||[]; NODE_PROBE = !!probe;
     renderNodeRows();
-    $("nodeCount").textContent = "("+NODE_DATA.length+" 个)";
+    updateNodeCount();
     if(probe){
       const ok = NODE_DATA.filter(n=>n.ok).length;
       $("probeMsg").textContent = "可达 "+ok+"/"+NODE_DATA.length;
@@ -1093,6 +1123,46 @@ class Panel:
             self.cfg["pool_strategy"] = self.pool.strategy
         return cfgmod.save(self.cfg, self.config_path)
 
+    def _disabled_nodes(self) -> set:
+        return {str(h) for h in (self.cfg.get("disabled_nodes") or []) if h}
+
+    def _node_enabled(self, host) -> bool:
+        return str(host) not in self._disabled_nodes()
+
+    async def api_node_disable(self, req):
+        """Enable/disable one node. Disabled nodes are dropped from the
+        subscription, slug routing and the local proxy's node pool."""
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        host = (body.get("host") or "").strip()
+        if not host:
+            return web.json_response({"error": "缺少 host"}, status=400)
+        disabled = bool(body.get("disabled"))
+        cur = [str(h) for h in (self.cfg.get("disabled_nodes") or [])]
+        if disabled:
+            if host not in cur:
+                cur.append(host)
+        else:
+            cur = [h for h in cur if h != host]
+        self.cfg["disabled_nodes"] = cur
+        try:
+            cfgmod.save(self.cfg, self.config_path)
+        except Exception as e:
+            return web.json_response({"error": str(e)})
+        # 热应用：运行中的本地代理立即按新的禁用集合选节点
+        newset = set(cur)
+        for s in (self.srv, self._st_srv):
+            if s is not None:
+                try:
+                    s.picker.exclude = newset
+                except Exception:
+                    pass
+        return web.json_response({"ok": True, "host": host,
+                                  "disabled": disabled,
+                                  "disabled_count": len(cur)})
+
     # ---- handlers ----
     async def index(self, req):
         return web.Response(text=PAGE, content_type="text/html")
@@ -1445,6 +1515,7 @@ class Panel:
                     Panel._egress_cache[host] = ip
         for n in nodes:
             n["egress_ip"] = Panel._egress_cache.get(n["host"])
+            n["disabled"] = not self._node_enabled(n["host"])
 
         return web.json_response({"nodes": nodes})
 
@@ -1478,7 +1549,8 @@ class Panel:
             # 会裸抛 IndexError；这里一并挡掉。
             return web.json_response({"error": "无账号，先添加"})
         try:
-            picker = NodePicker(self.pool.clients[0], country, node)
+            picker = NodePicker(self.pool.clients[0], country, node,
+                                  exclude=self._disabled_nodes())
             srv = ProxyServer(
                 self.pool, picker,
                 host=self.cfg.get("host", "127.0.0.1"),
@@ -1509,7 +1581,8 @@ class Panel:
                 return web.json_response({"error": "已有测速在进行"})
             srv = None
             try:
-                picker = NodePicker(self.pool.clients[0], None, node)
+                picker = NodePicker(self.pool.clients[0], None, node,
+                                      exclude=self._disabled_nodes())
                 st_port, _st_socks = _pick_free_ports()
                 srv = ProxyServer(
                     self.pool, picker,
@@ -1628,7 +1701,8 @@ class Panel:
             return web.json_response({**base, "stopped": True,
                                       "note": "端口已保存；没有账号，代理保持停止"})
         try:
-            picker = NodePicker(self.pool.clients[0], country, node)
+            picker = NodePicker(self.pool.clients[0], country, node,
+                                  exclude=self._disabled_nodes())
             srv = ProxyServer(
                 self.pool, picker,
                 host=host, http_port=http_port, socks_port=socks_port,
@@ -2061,10 +2135,10 @@ class Panel:
         if not uuid_hex:
             raise web.HTTPNotFound()
         slug = req.match_info.get("slug", "").strip().lower()
-        nodes = await self._public_nodes()
+        nodes = [n for n in await self._public_nodes() if self._node_enabled(n[2])]
         node = next((n for n in nodes if n[2] == slug), None)
         if node is None:
-            # unknown slug: only Fastly list members are allowed as egress
+            # unknown or disabled slug: only enabled Fastly nodes are allowed
             raise web.HTTPNotFound()
         node_host, node_port = node[2], node[3]
 
@@ -2361,7 +2435,7 @@ class Panel:
         if not self._bridge_available(server):
             return web.json_response({"error": "vless bridge not deployed"})
         uuid = self._bridge_uuid()
-        nodes = await self._public_nodes()
+        nodes = [n for n in await self._public_nodes() if self._node_enabled(n[2])]
         lines = []
         if nodes:
             for code, name, host, port in nodes:
@@ -2407,7 +2481,8 @@ class Panel:
             socks_port=self.cfg.get("sub_socks_port") or self.cfg.get("socks_port", 1080),
         )
         if self._bridge_available(server):
-            nodes = await self._public_nodes()
+            nodes = [n for n in await self._public_nodes()
+                     if self._node_enabled(n[2])]
             per_node = []
             if nodes:
                 for code, name, nh, nport in nodes:
@@ -2656,6 +2731,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/runtime-ua", panel.api_runtime_ua),
         web.get("/api/servers", panel.api_servers),
         web.get("/api/nodes", panel.api_nodes),
+        web.post("/api/nodes/disable", panel.api_node_disable),
         web.post("/api/speedtest", panel.api_speedtest),
         web.get("/ws-echo", panel.ws_echo),
         web.get("/vless", panel.ws_bridge),

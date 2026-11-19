@@ -49,11 +49,13 @@ class NodePicker:
     """Chooses a Fastly node for a country preference."""
 
     def __init__(self, client: GuardianClient, country: Optional[str] = None,
-                 node: Optional[str] = None):
+                 node: Optional[str] = None, exclude=None):
         self.client = client
         self.country = (country or "").upper() or None
         # Pin to one concrete node hostname (overrides country fan-out).
         self.node = (node or "").strip() or None
+        # Hosts the user disabled in the panel; excluded from random pools.
+        self.exclude = {str(h) for h in (exclude or ()) if h}
         self._by_country: dict[str, dict] = {}
         # Hostname of the most recently picked node; lets the panel show the
         # actual egress country in "any country" mode. Set from worker threads,
@@ -80,8 +82,14 @@ class NodePicker:
                         return [(h, p)]
             raise RuntimeError(f"node {self.node!r} not in server list")
         if self.country:
-            return list(self._by_country[self.country]["nodes"])
-        return [n for v in self._by_country.values() for n in v["nodes"]]
+            pool = list(self._by_country[self.country]["nodes"])
+        else:
+            pool = [n for v in self._by_country.values() for n in v["nodes"]]
+        if self.exclude:
+            pool = [(h, p) for h, p in pool if h not in self.exclude]
+            if not pool:
+                raise RuntimeError("所有可用节点都被禁用了")
+        return pool
 
     def pick(self) -> tuple[str, int]:
         h, p = random.choice(self._pool())

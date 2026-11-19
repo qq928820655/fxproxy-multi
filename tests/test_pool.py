@@ -305,6 +305,28 @@ def test_runtime_user_agent():
           "关闭后恢复 requests 默认 UA")
 
 
+def test_node_picker_exclude():
+    print("[nodes] 禁用节点从选择池排除")
+    from fxproxy.proxyserver import NodePicker
+
+    class _C:
+        def nodes_by_country(self):
+            return {"US": {"name": "US", "nodes": [("a", 1), ("b", 2)]}}
+
+    p = NodePicker(_C(), exclude={"a"})
+    pool = p._pool()
+    check([h for h, _ in pool] == ["b"], "禁用节点被排除，只剩 b")
+    p2 = NodePicker(_C(), exclude={"a", "b"})
+    try:
+        p2._pool()
+        check(False, "全部禁用应报错")
+    except RuntimeError:
+        check(True, "全部禁用时报错")
+    # 显式 pin 的节点优先于禁用（用户手动指定）
+    p3 = NodePicker(_C(), node="a", exclude={"a"})
+    check(p3._pool() == [("a", 1)], "显式 pin 覆盖禁用")
+
+
 if __name__ == "__main__":
     test_config_migration()
     test_env_deployment_overrides()
@@ -312,6 +334,7 @@ if __name__ == "__main__":
     test_port_helpers()
     test_force_ipv4_egress()
     test_runtime_user_agent()
+    test_node_picker_exclude()
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()

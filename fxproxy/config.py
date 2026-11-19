@@ -36,6 +36,8 @@ DEFAULTS = {
     # 运行时控制面请求的 User-Agent："" = requests 默认；"firefox" = 伪装
     # 成 Firefox UA（降低 python-requests 指纹），也可填自定义字符串。
     "runtime_user_agent": "",
+    # 被禁用的节点主机名列表：这些节点不会出现在订阅里，也不会被代理选中。
+    "disabled_nodes": [],
 }
 
 _VALID_STRATEGIES = ("round-robin", "quota", "failover")
