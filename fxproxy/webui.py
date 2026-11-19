@@ -484,13 +484,17 @@ class Panel:
         return web.Response(text=PAGE, content_type="text/html")
 
     def _egress_country(self) -> str:
-        """Country of the node that last carried traffic ('' if none yet)."""
+        """Chinese country label of the node that last carried traffic."""
         if self.srv is None:
             return ""
         host = getattr(self.srv.picker, "last_host", None)
         if not host:
             return ""
-        return self.srv.picker.country_of(host)
+        from . import geo
+        code = self.srv.picker.country_of(host)
+        if not code:
+            return ""
+        return geo.label(code)[0]
 
     async def api_state(self, req):
         running = self.srv is not None
