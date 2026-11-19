@@ -88,6 +88,8 @@ PAGE = r"""<!doctype html>
   select, button, input { font-size:14px; border-radius:8px; border:1px solid #30363d;
           padding:9px 12px; background:#0d1117; color:#e6edf3; }
   input { min-width:180px; }
+  /* checkbox 不能吃 input 的 min-width / padding，否则会被拉成一条长条 */
+  input[type=checkbox] { min-width:0; width:auto; padding:0; margin:0; accent-color:#2ea043; }
   input::placeholder { color:#6e7681; }
   button { cursor:pointer; border-color:#2ea043; }
   button.primary { background:#238636; border-color:#2ea043; color:#fff; font-weight:600; }
@@ -95,7 +97,8 @@ PAGE = r"""<!doctype html>
   button.danger { background:#3d1b1b; border-color:#8b3a3a; color:#ff9b9b; }
   button.sm { padding:5px 10px; font-size:12px; }
   button:disabled { opacity:.5; cursor:not-allowed; }
-  .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px;
+          font-weight:600; white-space:nowrap; }
   .on { background:#238636; color:#fff; }
   .off { background:#484f58; color:#fff; }
   .cool { background:#9e6a03; color:#fff; }
@@ -112,8 +115,17 @@ PAGE = r"""<!doctype html>
   th, td { text-align:left; padding:8px 6px; border-bottom:1px solid #21262d; }
   th { color:#8b949e; font-weight:600; font-size:12px; }
   td .bar { margin-top:4px; }
-  .nodescroll { max-height:320px; overflow:auto; margin-top:10px; }
-  .nodescroll thead th { position:sticky; top:0; background:#161b22; z-index:1; }
+  .nodescroll { max-height:320px; overflow:auto; margin-top:10px; }  .nodescroll thead th { position:sticky; top:0; background:#161b22; z-index:1; }
+  /* 订阅地址：标签一行、地址一行，复制按钮只留图标，长 URL 才能完整显示 */
+  .suburl { margin-top:10px; }
+  .suburl > label { display:block; margin-bottom:5px; }
+  .subline { display:flex; align-items:center; gap:8px; }
+  .subline code { flex:1 1 auto; min-width:0; display:block; word-break:break-all;
+                  font-size:12px; line-height:1.55; }
+  button.icon { flex:0 0 auto; padding:6px; line-height:0; background:#0d1117;
+                border-color:#30363d; color:#8b949e; }
+  button.icon:hover { color:#e6edf3; border-color:#2ea043; }
+  button.icon.done { color:#3fb950; border-color:#2ea043; }
   td.lat-fast { color:#3fb950; font-weight:600; }
   td.lat-mid  { color:#d29922; font-weight:600; }
   td.lat-slow { color:#e3853c; font-weight:600; }
@@ -132,6 +144,46 @@ PAGE = r"""<!doctype html>
   [data-pane][hidden] { display:none !important; }
   @media (max-width:600px) {
     .tab { padding:8px 12px; font-size:13px; }
+    /* 手机上 6 列的账号表会把页面撑出屏幕（整页左右滚），改成一行一张卡 */
+    .wrap { padding:18px 12px 48px; }
+    .card { padding:14px; }
+    .card h2 { font-size:13px; }
+    .row { gap:8px; }
+    input, select { min-width:0; max-width:100%; }
+    .row > input, .row > select { flex:1 1 100%; }
+    .row > button { flex:1 1 auto; }
+    table.acct { font-size:13px; }
+    table.acct thead { display:none; }
+    table.acct, table.acct tbody, table.acct tr, table.acct td { display:block; width:auto; }
+    table.acct tr { border:1px solid #30363d; border-radius:10px;
+                    padding:8px 12px; margin:0 0 10px; }
+    table.acct td { border:0; padding:4px 0; display:flex; align-items:center;
+                    justify-content:space-between; gap:10px; }
+    /* 左侧小标签由 data-l 提供，不再依赖表头 */
+    table.acct td[data-l]::before { content:attr(data-l); color:#8b949e; font-size:12px;
+                                    flex:0 0 auto; }
+    table.acct td.mail { font-size:13px; word-break:break-all; justify-content:flex-start; }
+    table.acct td.mail::before { content:none; }
+    table.acct td.num::after { content:attr(data-v); margin-left:auto; font-variant-numeric:tabular-nums; }
+    table.acct td.quota { display:block; }
+    table.acct td.quota::before { display:block; margin-bottom:3px; }
+    table.acct td.quota .bar { margin-top:6px; }
+    /* 节点表同理：列太多，窄屏改成一行一个节点 */
+    .nodescroll { max-height:none; overflow:visible; }
+    table.nodes thead { display:none; }
+    table.nodes, table.nodes tbody, table.nodes tr, table.nodes td { display:block; width:auto; }
+    table.nodes tr { border:1px solid #30363d; border-radius:10px;
+                     padding:8px 12px; margin:0 0 10px; }
+    table.nodes td { border:0; padding:3px 0; display:flex; align-items:center;
+                     justify-content:space-between; gap:10px; }
+    table.nodes td[data-l]::before { content:attr(data-l); color:#8b949e; font-size:12px; }
+    table.nodes td.nname { font-weight:600; }
+    table.nodes td.nname::before, table.nodes td.nhost::before { content:none; }
+    table.nodes td.nhost { justify-content:flex-start; flex-wrap:wrap; font-size:12px;
+                           word-break:break-all; }
+    table.nodes td.nhost .muted { margin:0 0 0 6px; font-size:11px; }
+    table.nodes td.nact { display:flex; gap:8px; padding-top:8px; }
+    table.nodes td.nact button { flex:1 1 0; }
   }
 </style>
 </head>
@@ -144,39 +196,6 @@ PAGE = r"""<!doctype html>
     <button class="tab on" data-tab="run" role="tab">运行管理</button>
     <button class="tab" data-tab="acct" role="tab">账户设置</button>
     <button class="tab" data-tab="sys" role="tab">系统设置</button>
-  </div>
-
-  <div class="card" id="loginCard" data-pane="acct" style="display:none;">
-    <h2>添加账号 <button id="addClose" class="sm" style="float:right;font-weight:400;">收起</button></h2>
-    <div class="row">
-      <label>方式</label>
-      <select id="loginMode">
-        <option value="token">直接粘贴 refresh_token（最稳）</option>
-        <option value="cookie">Cookie / 插件导出（推荐）</option>
-        <option value="password">邮箱 + 密码</option>
-        <option value="session">sessionToken</option>
-      </select>
-    </div>
-    <div id="rtFields" class="row" style="margin-top:10px;">
-      <input id="refreshToken" placeholder="粘贴 refresh_token (hex)" style="width:100%;">
-    </div>
-    <div id="pwFields" class="row" style="margin-top:10px; display:none;">
-      <input id="email" type="email" placeholder="FxA 邮箱">
-      <input id="password" type="password" placeholder="FxA 密码">
-    </div>
-    <div id="stFields" class="row" style="margin-top:10px; display:none;">
-      <input id="sessionToken" placeholder="粘贴 sessionToken (hex)" style="width:100%;">
-    </div>
-    <div id="ckFields" style="margin-top:10px; display:none;">
-      <textarea id="cookieData" rows="5" style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px;" placeholder="粘贴 Chrome 插件导出的 JSON，或 sessionToken=xxx Cookie 头，可一次贴多个"></textarea>
-      <div class="muted" style="font-size:12px;margin-top:4px;">住宅 IP 登录 → 点插件「提取并复制」→ 粘贴到这里。支持插件 JSON / Cookie 头 / 多个 token，批量自动入池。</div>
-    </div>
-    <div class="row" style="margin-top:10px;">
-      <button id="loginBtn" class="primary">添加账号</button>
-      <button id="browserBtn">浏览器登录（推荐新用户）</button>
-      <span id="loginMsg" class="muted"></span>
-    </div>
-    <div class="muted">新账号追加进池；重复账号自动忽略。邮箱密码登录常被 Mozilla 风控拦（406），最省事是粘贴 refresh_token。</div>
   </div>
 
   <div class="card" data-pane="run">
@@ -194,6 +213,17 @@ PAGE = r"""<!doctype html>
     </div>
     <div id="nodeWarn" style="display:none;margin-top:8px;color:#f0b400;font-size:13px;"></div>
     <div id="egress" class="egress muted"></div>
+
+    <div style="border-top:1px solid #21262d;margin-top:14px;padding-top:12px;">
+      <div class="row" style="margin-top:0;">
+        <label>总额度</label>
+        <b id="qUsed" style="font-size:14px;">—</b>
+        <span id="qPct" class="muted" style="margin-top:0;font-size:12px;"></span>
+        <button id="qRefresh" class="sm">刷新额度</button>
+      </div>
+      <div class="bar" style="height:8px;"><i id="qBar" style="width:0%"></i></div>
+      <div class="muted" id="qSub" style="font-size:12px;margin-top:6px;">账号池为空</div>
+    </div>
   </div>
 
   <div class="card" data-pane="sys">
@@ -256,7 +286,7 @@ PAGE = r"""<!doctype html>
       <span id="probeMsg" class="muted"></span>
     </div>
     <div class="nodescroll">
-      <table>
+      <table class="nodes">
         <thead><tr>
           <th class="sortable" data-key="name" onclick="sortNodes('name')">国家<span class="arrow"></span></th>
           <th class="sortable" data-key="host" onclick="sortNodes('host')">节点主机<span class="arrow"></span></th>
@@ -287,28 +317,78 @@ PAGE = r"""<!doctype html>
       <button id="addToggle" class="primary sm">+ 添加账号</button>
     </div>
     <div class="row" style="margin-bottom:12px;">
-      <label>出口强制 IPv4</label>
-      <input type="checkbox" id="forceIpv4">
+      <label style="display:inline-flex;align-items:center;gap:8px;">
+        出口强制 IPv4 <input type="checkbox" id="forceIpv4">
+      </label>
       <span class="muted" style="font-size:12px;">域名先在本机解析为 IPv4 再连目标，出口 IP 走 IPv4；纯 IPv6 站点会连不上</span>
     </div>
-    <table>
+    <table class="acct">
       <thead><tr><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
       <tbody id="acctBody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
     </table>
     <div class="kv" style="margin-top:10px;"><span>总剩余</span><b id="totalRemain">—</b></div>
   </div>
 
+  <div class="card" id="loginCard" data-pane="acct" style="display:none;">
+    <h2>添加账号 <button id="addClose" class="sm" style="float:right;font-weight:400;">收起</button></h2>
+    <div class="row">
+      <label>方式</label>
+      <select id="loginMode">
+        <option value="token">直接粘贴 refresh_token（最稳）</option>
+        <option value="cookie">Cookie / 插件导出（推荐）</option>
+        <option value="password">邮箱 + 密码</option>
+        <option value="session">sessionToken</option>
+      </select>
+    </div>
+    <div id="rtFields" class="row" style="margin-top:10px;">
+      <input id="refreshToken" placeholder="粘贴 refresh_token (hex)" style="width:100%;">
+    </div>
+    <div id="pwFields" class="row" style="margin-top:10px; display:none;">
+      <input id="email" type="email" placeholder="FxA 邮箱">
+      <input id="password" type="password" placeholder="FxA 密码">
+    </div>
+    <div id="stFields" class="row" style="margin-top:10px; display:none;">
+      <input id="sessionToken" placeholder="粘贴 sessionToken (hex)" style="width:100%;">
+    </div>
+    <div id="ckFields" style="margin-top:10px; display:none;">
+      <textarea id="cookieData" rows="5" style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px;" placeholder="粘贴 Chrome 插件导出的 JSON，或 sessionToken=xxx Cookie 头，可一次贴多个"></textarea>
+      <div class="muted" style="font-size:12px;margin-top:4px;">住宅 IP 登录 → 点插件「提取并复制」→ 粘贴到这里。支持插件 JSON / Cookie 头 / 多个 token，批量自动入池。</div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button id="loginBtn" class="primary">添加账号</button>
+      <button id="browserBtn">浏览器登录（推荐新用户）</button>
+      <span id="loginMsg" class="muted"></span>
+    </div>
+    <div class="muted">新账号追加进池；重复账号自动忽略。邮箱密码登录常被 Mozilla 风控拦（406），最省事是粘贴 refresh_token。</div>
+  </div>
+
   <div class="card" data-pane="sys">
     <h2>订阅与导出</h2>
-    <div class="row">
-      <label>Clash / Mihomo 订阅</label>
-      <code id="subUrl" style="flex:1;word-break:break-all;">—</code>
-      <button id="copySubBtn" class="sm">复制地址</button>
+    <div class="suburl">
+      <label for="subUrl">Clash / Mihomo 订阅</label>
+      <div class="subline">
+        <code id="subUrl">—</code>
+        <button id="copySubBtn" class="icon" title="复制订阅地址" aria-label="复制订阅地址">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor"
+               stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/>
+            <path d="M10.5 3.2V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.2"/>
+          </svg>
+        </button>
+      </div>
     </div>
-    <div class="row" style="margin-top:8px;">
-      <label>mihomo provider</label>
-      <code id="provUrl" style="flex:1;word-break:break-all;">—</code>
-      <button id="copyProvBtn" class="sm">复制地址</button>
+    <div class="suburl">
+      <label for="provUrl">mihomo provider</label>
+      <div class="subline">
+        <code id="provUrl">—</code>
+        <button id="copyProvBtn" class="icon" title="复制 provider 地址" aria-label="复制 provider 地址">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor"
+               stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/>
+            <path d="M10.5 3.2V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.2"/>
+          </svg>
+        </button>
+      </div>
     </div>
     <div class="muted" style="font-size:12px;margin-top:4px;">
       上面的 URL 填进 Clash/Mihomo 的「订阅链接」导入。异机导入需让面板监听 0.0.0.0
@@ -432,18 +512,19 @@ function renderNodeRows(){
   }
   const probe = NODE_PROBE;
   const rows = arr.map(n => {
-    const lat = `<td class="${latClass(n)}">${probe?latText(n):"—"}</td>`;
+    const lat = `<td class="${latClass(n)}" data-l="延迟">${probe?latText(n):"—"}</td>`;
     const mb = n.mbps;
-    let bw = `<td id="bw-${n.host}" class="muted">—</td>`;
+    let bw = `<td id="bw-${n.host}" class="muted" data-l="带宽">—</td>`;
     if(mb != null){
       bw = mb >= 5
-        ? `<td><span class="${mb>=15?'pill on':''}" style="${mb>=15||mb<5?'':'color:#d29922'}" id="bw-${n.host}">${mb} Mbps</span></td>`
-        : `<td><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
+        ? `<td data-l="带宽"><span class="${mb>=15?'pill on':''}" style="${mb>=15||mb<5?'':'color:#d29922'}" id="bw-${n.host}">${mb} Mbps</span></td>`
+        : `<td data-l="带宽"><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
     }
     const cur = (n.host === CURRENT_NODE);
     const ipLine = n.egress_ip ? `<div class="muted" style="font-size:11px;">出口 ${n.egress_ip}</div>` : '';
-    return `<tr${cur?' style="background:#123329;"':''}><td>${n.name}${cur?' <span class="pill on">当前</span>':''}</td><td>${n.host}${ipLine}</td><td>${n.port}</td>${lat}${bw}`+
-      `<td><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
+    return `<tr${cur?' style="background:#123329;"':''}><td class="nname">${n.name}${cur?' <span class="pill on">当前</span>':''}</td>`+
+      `<td class="nhost">${n.host}${ipLine}</td><td data-l="端口">${n.port}</td>${lat}${bw}`+
+      `<td class="nact"><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
       `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button></td></tr>`;
   });
   body.innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无节点</td></tr>';
@@ -521,9 +602,12 @@ let AUTHED = false, userPicked = false;
 // 旧逻辑写成「有账号 → 永久 display:none」，等于把加第二个账号的入口藏死了。
 let ADD_PINNED = false;
 function setAddOpen(v, auto){
-  $("loginCard").style.display = v ? "block" : "none";
-  $("addToggle").textContent = v ? "收起添加框" : "+ 添加账号";
+  const card = $("loginCard");
+  card.style.display = v ? "block" : "none";
+  $("addToggle").textContent = v ? "收起" : "+ 添加账号";
   $("addToggle").className = v ? "sm" : "primary sm";
+  // 卡片在账号池下面，账号多的时候它在折叠线之外，手动展开要滚过去
+  if(v && !auto) card.scrollIntoView({block:"nearest", behavior:"smooth"});
   if(!auto) ADD_PINNED = true;
 }
 // 后端在取不到外网时（拿 Mozilla 节点表 / 查配额）会卡住，请求不设超时
@@ -565,6 +649,44 @@ async function loadState(){
   if(s.version){ $("verNow").textContent = "v"+s.version; $("verNow").className = "pill on"; }
   if(!userPicked && s.running && s.country){ $("country").value = s.country; updateNodeWarn(); }
 }
+// 运行管理页顶部的额度概览：和账号池共用 /api/accounts 的数据，不额外发请求
+function renderQuota(d){
+  const accts = (d && d.accounts) || [];
+  const okN = accts.filter(a=>a.ok).length, n = accts.length;
+  const bar = $("qBar");
+  const head = n ? ("账号 "+n+" 个 · 可用 "+okN+" 个") : "账号池为空";
+  if(!n){
+    $("qUsed").textContent = "—"; $("qPct").textContent = "";
+    bar.style.width = "0%"; $("qSub").style.color = ""; $("qSub").textContent = head;
+    return;
+  }
+  // 与「总剩余」同一套口径：优先用后端对齐后的 display_used_bytes
+  // （Firefox 基线 + 其后本地新增），取不到时按 Firefox 值 / 本地计量兜底
+  const ffUsed = d.total_used_bytes, localUsed = d.local_used_bytes || 0;
+  const used = (d.display_used_bytes != null) ? d.display_used_bytes
+    : ((ffUsed != null && ffUsed > 0) ? ffUsed : (localUsed > 0 ? localUsed : ffUsed));
+  const max = d.total_max_bytes, rem = d.total_remaining_bytes;
+  let pct = 0, txt = "部分未知", sub = head;
+  if(d.unlimited){
+    txt = "不限量"; pct = 0; sub = head + " · 该池不计额度";
+  } else if(used != null && max){
+    pct = Math.max(0, Math.min(100, 100*used/max));
+    txt = "已用 "+fmt(used)+" / "+fmt(max);
+    sub = head + " · 剩余 "+fmt(Math.max(0, max-used));
+  } else if(max){
+    if(rem != null) pct = Math.max(0, Math.min(100, 100*(max-rem)/max));
+    txt = "月度 "+fmt(max)+(rem!=null ? (" · 已用 "+fmt(max-rem)) : " · 用量待取");
+    sub = head + (rem!=null ? (" · 剩余 "+fmt(rem)) : " · 点「刷新额度」重取");
+  } else {
+    sub = head + " · 额度信息取不到（账户异常或网络不通）";
+  }
+  $("qUsed").textContent = txt;
+  $("qPct").textContent = (max && !d.unlimited) ? (pct.toFixed(1)+"%") : "";
+  bar.style.width = pct.toFixed(1)+"%";
+  // 用超 90% 变色，别等跑干了才发现
+  bar.style.background = pct >= 90 ? "#da3633" : (pct >= 70 ? "#d29922" : "#2ea043");
+  $("qSub").textContent = sub;
+}
 async function loadAccounts(){
   try{
     const r = await timeoutFetch("/api/accounts", null, 25000); const d = await r.json();
@@ -585,9 +707,11 @@ async function loadAccounts(){
       } else if(a.max_bytes){
         rem = "月度 "+fmt(a.max_bytes)+" · 用量待取";
       } else { rem = (a.error||"—").slice(0,32); }
-      return `<tr><td>#${i+1}</td><td style="font-size:12px;">${a.email||'<span class="muted">—</span>'}</td><td>${a.uid||"—"}</td><td>${st}</td>
-        <td>${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
-        <td><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
+      // data-l 给窄屏用：表头隐藏后靠它显示字段名
+      return `<tr><td class="mail" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
+        <td data-l="uid">${a.uid||"—"}</td><td data-l="状态">${st}</td>
+        <td class="quota" data-l="已用 / 月度">${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
+        <td data-l="操作"><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
     });
     $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无账号</td></tr>';
     const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
@@ -600,8 +724,18 @@ async function loadAccounts(){
       : ((usedShown!=null && d.total_max_bytes!=null)
          ? "已用 "+fmt(usedShown)+" / "+fmt(d.total_max_bytes)
          : (remTxt || (d.total_max_bytes!=null ? "月度 "+fmt(d.total_max_bytes)+" · 用量待取" : "部分未知")));
-  }catch(e){ $("acctBody").innerHTML = '<tr><td colspan="6" class="muted">加载失败</td></tr>'; }
+    renderQuota(d);
+  }catch(e){
+    $("acctBody").innerHTML = '<tr><td colspan="6" class="muted">加载失败</td></tr>';
+    renderQuota(null);
+  }
 }
+// 运行管理页的「刷新额度」：与账号池的按钮同一个后端接口
+$("qRefresh").onclick = async () => {
+  const b = $("qRefresh"); b.disabled = true; b.textContent = "刷新中…";
+  try{ await fetch("/api/accounts/refresh",{method:"POST"}); await loadAccounts(); }
+  finally{ b.disabled = false; b.textContent = "刷新额度"; }
+};
 $("loginMode").onchange = () => {
   const m = $("loginMode").value;
   $("rtFields").style.display = m === "token" ? "flex" : "none";
@@ -782,15 +916,34 @@ $("copyCfgBtn").onclick = async () => {
     ta.remove();
   }
 };
-$("copySubBtn").onclick = async () => {
-  const u = $("subUrl").textContent;
-  try { await navigator.clipboard.writeText(u); $("copyMsg").textContent = "订阅地址已复制✓"; }
-  catch(e) { $("copyMsg").textContent = "订阅地址：" + u; }
+// 复制成功后把图标换成对勾 1.2 秒，手机上不靠底部那行文案也知道成了
+function flashOk(btn){
+  const old = btn.innerHTML;
+  btn.innerHTML = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="#3fb950"'
+    + ' stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.6l3.3 3.3L13.5 4"/></svg>';
+  btn.classList.add("done");
+  setTimeout(()=>{ btn.innerHTML = old; btn.classList.remove("done"); }, 1200);
+}
+async function copyText(text){
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch(_) {}
+    ta.remove(); return ok;
+  }
+}
+$("copySubBtn").onclick = async (e) => {
+  const btn = e.currentTarget, u = $("subUrl").textContent;
+  if(await copyText(u)){ flashOk(btn); $("copyMsg").textContent = "订阅地址已复制✓"; }
+  else { $("copyMsg").textContent = "订阅地址：" + u; }
 };
-$("copyProvBtn").onclick = async () => {
-  const u = $("provUrl").textContent;
-  try { await navigator.clipboard.writeText(u); $("copyMsg").textContent = "provider 地址已复制✓"; }
-  catch(e) { $("copyMsg").textContent = "provider 地址：" + u; }
+$("copyProvBtn").onclick = async (e) => {
+  const btn = e.currentTarget, u = $("provUrl").textContent;
+  if(await copyText(u)){ flashOk(btn); $("copyMsg").textContent = "provider 地址已复制✓"; }
+  else { $("copyMsg").textContent = "provider 地址：" + u; }
 };
 $("testBtn").onclick = async () => {
   $("egress").textContent="测试中…";
