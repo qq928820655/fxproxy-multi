@@ -1387,8 +1387,18 @@ class Panel:
                         "    strategy: round-robin\n"
                         "    proxies:\n"
                         + names
+                        + "\n  - name: \"fxproxy-fast\"\n"
+                        "    type: url-test\n"
+                        "    url: https://www.gstatic.com/generate_204\n"
+                        "    interval: 300\n"
+                        "    tolerance: 80\n"
+                        "    lazy: true\n"
+                        "    proxies:\n"
+                        + names
                     )
-                    new_group = "      - fxproxy-auto\n"
+                    new_group = ("      - fxproxy-fast\n"
+                                 "      - fxproxy-auto\n"
+                                 + names)
                 else:
                     lb_group = ""
                     new_group = ('      - fxproxy-vless-ws\n'
