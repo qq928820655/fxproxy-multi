@@ -84,31 +84,37 @@ Mozilla 对 `/account/login` 和 `/account/create` 按机房 IP 风控（406）�
 `chrome-extension/` 里有一个 Manifest V3 插件，在你**已登录**的 Chrome 里一键取出 FxA 凭证，
 复制到剪贴板，粘到面板即可。全程不发外部请求——只读页面自己的 localStorage/cookie。
 
-安装方式三选一：
+VirtualBrowser 官方支持两种本地格式：**ZIP（unpacked，开发者模式安装）** 和 **CRX（packaged）**。
+两种都在仓库根目录提供，任选其一。
 
-**A. CRX（指纹浏览器 / 虚拟浏览器直接导入，推荐）**
+**A. zip —— 指纹浏览器最稳，优先用这个（推荐）**
 
-下载仓库根目录的 `fxproxy-chrome-extension.crx`，在 VirtualBrowser / 指纹浏览器的
-「插件管理 → 安装插件 → 本地 CRX 文件」里选中它即可。
+VirtualBrowser 官方文档写明：ZIP = "unpacked source with manifest.json at root，系统解压后以开发者模式安装"。
+它的 ZIP 路径不经过 CRX 头解析，没有格式兼容问题。
 
-- 这是标准 CRX3（带 RSA-SHA256 有效签名），内部结构是**五个文件平铺在根目录**。
-- 如果你的浏览器导入时报错 `ENOENT: ... extensions\...\content.js`，说明你用的是
-  别人重新打过包的 CRX——内部多套了一层 `fxproxy-chrome-extension/` 目录，浏览器解压后
-  到根目录找不到 `content.js`。用本仓库这个 `.crx` 替换即可。
+1. 「插件管理 → 安装插件」，来源选本地文件，直接上传仓库根目录的 `fxproxy-chrome-extension.zip`
+2. 五个文件在压缩包根目录，系统自动解压安装，无需再选目录
+
+自己打包：`cd chrome-extension && zip -r ../fxproxy-chrome-extension.zip .`（`manifest.json` 必须在根，不能套子文件夹）。
+
+**B. CRX（packaged）—— 直接导入本地 CRX 文件时用**
+
+仓库根目录的 `fxproxy-chrome-extension.crx` 是 **CRX2**（RSA-SHA256 有效签名，五个文件平铺根目录）。
+用 CRX2 是因为 VirtualBrowser 解析标准 CRX3 的 protobuf 头会崩，报
+`Cannot read properties of null (reading 'toString')`；CRX2 是固定 16 字节头，兼容最广。
+
+- 在「插件管理 → 安装插件 → 本地 CRX 文件」里选中它。
+- 若报 `ENOENT: ... extensions\...\content.js`，是内部多套了一层 `fxproxy-chrome-extension/` 目录的旧包，
+  换成仓库这个即可；若报 `null (reading 'toString')`，是用了 CRX3，换成仓库这个 CRX2。
 - 自校验：`python tools/build_crx.py --verify fxproxy-chrome-extension.crx`
-- 改了插件源码后重新生成：`python tools/build_crx.py`（依赖 `pip install cryptography`）。
+- 重新生成：`python tools/build_crx.py`（CRX2 默认；`--crx3` 出 CRX3；依赖 `pip install cryptography`）。
+- 如果这两种 CRX 在你的客户端版本上都不行，直接用 **A. zip**。
 
-**B. zip（普通 Chrome 迁移）**
-
-1. 下载 `fxproxy-chrome-extension.zip`（或自己打包：`cd chrome-extension && zip -r ../fxproxy-chrome-extension.zip .`）
-2. 解压到任意目录（五个文件在根目录，解压出来就是扩展目录）
-3. Chrome 打开 `chrome://extensions/`，开「开发者模式」
-4. 「加载已解压的扩展程序」→ 选解压出来的那个目录
-
-**C. 直接用目录**：加载仓库里的 `chrome-extension/` 目录，效果一样。
+**C. 普通 Chrome**：打开 `chrome://extensions/` → 开「开发者模式」→「加载已解压的扩展程序」→
+选仓库里的 `chrome-extension/` 目录（或 A 里解压出的目录）。
 
 > 打包要点：`manifest.json`、`content.js`、`formats.js`、`popup.html`、`popup.js` 必须在包根，
-> 不能套在子文件夹里——否则指纹浏览器解压后找不到 `content.js`。
+> 不能套子文件夹——否则指纹浏览器解压后找不到 `content.js`。
 
 用法：
 
@@ -562,6 +568,6 @@ FXPROXY_POOL_STRATEGY=round-robin
 | `deploy/oracle-free-bootstrap.sh` | Oracle Always Free 一键部署（venv + systemd + 防火墙 + 订阅） |
 | `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken，六种格式导出 |
 | `chrome-extension/formats.js` | 六种导出格式（JSON/lines/cookie/netscape/csv/accounts）的纯函数实现 |
-| `fxproxy-chrome-extension.crx` | 签名的 CRX3（文件平铺根目录），指纹浏览器直接导入 |
-| `fxproxy-chrome-extension.zip` | 同一插件的 zip 包，普通 Chrome「加载已解压扩展」用 |
-| `tools/build_crx.py`       | 从 `chrome-extension/` 生成/校验 CRX3，保证根目录平铺 |
+| `fxproxy-chrome-extension.zip` | 同一插件的 unpacked zip（文件平铺根目录），指纹浏览器优先用此格式 |
+| `fxproxy-chrome-extension.crx` | 签名的 CRX2（文件平铺根目录），直接导入本地 CRX 时用 |
+| `tools/build_crx.py`       | 从 `chrome-extension/` 生成/校验 CRX2（默认）或 CRX3（`--crx3`），保证根目录平铺 |

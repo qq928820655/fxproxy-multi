@@ -31,13 +31,14 @@ def main():
     check(all("/" not in n for n in names), "zip 条目无子目录")
     check(set(names) == set(bc.EXT_FILES), "zip 恰含 5 个扩展文件，无多余嵌套")
 
-    crx, meta = bc.build_crx3(zip_bytes)
-    check(crx[:4] == b"Cr24", "CRX magic = Cr24")
     import struct
-    check(struct.unpack("<I", crx[4:8])[0] == 3, "CRX 版本 = 3")
-    info = bc.verify_crx(crx)
-    check(info["signature_valid"] is True, "CRX3 RSA-SHA256 签名验证通过")
-    check(info["crx_id"] == meta["crx_id"], "crx_id 一致")
+    for builder, ver in ((bc.build_crx2, 2), (bc.build_crx3, 3)):
+        crx, meta = builder(zip_bytes)
+        check(crx[:4] == b"Cr24", f"CRX{ver} magic = Cr24")
+        check(struct.unpack("<I", crx[4:8])[0] == ver, f"CRX 版本 = {ver}")
+        info = bc.verify_crx(crx)
+        check(info["signature_valid"] is True, f"CRX{ver} RSA-SHA256 签名验证通过")
+        check(info["crx_id"] == meta["crx_id"], f"CRX{ver} crx_id 一致")
 
     print("[crx] 仓库内产出的 .crx")
     out = ROOT / "fxproxy-chrome-extension.crx"
@@ -45,6 +46,8 @@ def main():
         shipped = bc.verify_crx(out.read_bytes())
         check(all("/" not in n for n in shipped["entries"]), "随仓库分发的 .crx 也是平铺结构")
         check(shipped.get("signature_valid") is True, "随仓库分发的 .crx 签名有效")
+        # 指纹浏览器解析 CRX3 protobuf 头会崩（null.toString），主产物必须是 CRX2
+        check(shipped["version"] == 2, "随仓库分发的 .crx 是 CRX2（兼容指纹浏览器）")
     else:
         print("  --  未找到随仓库分发的 .crx（跳过）")
 
