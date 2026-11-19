@@ -7,6 +7,10 @@
 
 ### 新增
 
+- **发行包**：`tools/build_release.py` 打 `dist/fxproxy-<ver>-win.zip`（解压即可双击
+  `deploy\windows\install.bat`），内置扩展 zip/crx；`--check` 校验结构，刻意排除
+  `.venv` / 真实 `config.json` / `tools/.crx-key.pem`。`tests/test_release.py` 锁住
+  唯一顶层目录与必需文件。
 - **端口可配置**：面板「② 运行状态 → 端口」直接改 HTTP / SOCKS5 端口并应用，
   运行中的代理按新端口自动重启，`/clash.yaml` 订阅同步跟随。新增
   `POST /api/ports`（范围校验、同端口拒绝、面板端口冲突拒绝、占用预检），

@@ -184,6 +184,27 @@ pip install -e .          # 或 pip install -r requirements.txt
 
 Python ≥ 3.10。
 
+## 制品包（不想 clone 就下这些）
+
+| 文件 | 用途 |
+|---|---|
+| `dist/fxproxy-<版本>-win.zip` | Windows 全量包。解压 → 双击 `deploy\windows\install.bat` |
+| `fxproxy-chrome-extension.zip` | 浏览器扩展，Chromium 内核「加载已解压的扩展程序」选解压目录 |
+| `fxproxy-chrome-extension.crx` | 同上的 CRX3 包（部分指纹浏览器只吃 CRX，装不上就用 zip） |
+
+自己重打：
+
+```bash
+python tools/build_zip.py          # 扩展 zip（顶层唯一目录，--verify 校验）
+python tools/build_crx.py          # 扩展 CRX3 包，复用 tools/.crx-key.pem 固定 crx_id
+python tools/build_release.py      # Windows 全量发行包 -> dist/fxproxy-<ver>-win.zip
+python tools/build_release.py --check   # 只校验已有包结构
+```
+
+发行包里刻意不含：`.git` / `.venv` / 真实 `config.json`（含凭证）/ `tools/.crx-key.pem`（签名私钥）。
+
+还有 GitHub Releases 里挂同样的三个文件，直接从网页下载。
+
 ## 快速开始
 
 ### Windows —— 一键部署（推荐）
