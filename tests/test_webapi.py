@@ -226,6 +226,13 @@ async def main():
             check("type: http" in y and "type: socks5" in y, "订阅含 HTTP+SOCKS5 节点")
             check("127.0.0.1" in y and "port: 8080" in y, "订阅节点指向本地代理端口")
             check(r.headers.get("Content-Type", "").startswith("text/yaml"), "订阅 Content-Type 正确")
+            ui = r.headers.get("subscription-userinfo", "")
+            sm = panel.pool.summary()
+            exp_total = int(sm.get("total_max_bytes") or 0)
+            exp_used = int(sm.get("total_used_bytes") or 0)
+            check(f"download={exp_used}" in ui and f"total={exp_total}" in ui
+                  and "upload=0" in ui and "expire=0" in ui,
+                  f"订阅带配额头 subscription-userinfo（实得 {ui!r}）")
 
             print("[api] clash.yaml?provider=1 —— mihomo proxy-provider 形态")
             rp = await cli.get("/clash.yaml?provider=1")

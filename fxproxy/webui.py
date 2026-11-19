@@ -2145,12 +2145,38 @@ class Panel:
         else:
             fname = "fxproxy.yaml"
 
+        headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+        userinfo = await self._subscription_userinfo()
+        if userinfo:
+            headers["subscription-userinfo"] = userinfo
         return web.Response(
             text=text,
             content_type="text/yaml",
             charset="utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+            headers=headers,
         )
+
+    async def _subscription_userinfo(self):
+        """Build the ``subscription-userinfo`` header Clash/FlClash reads to
+        show traffic quota. Format: upload/download/total in bytes, expire as a
+        unix timestamp (0 = no expiry). ``total=0`` is rendered as unlimited by
+        the clients, which matches accounts with no cap."""
+        if self.pool is None:
+            return None
+        try:
+            s = await asyncio.to_thread(self.pool.summary)
+        except Exception:
+            return None
+        total = s.get("total_max_bytes") or 0
+        if s.get("unlimited"):
+            total = 0
+        used = s.get("total_used_bytes")
+        if used is None:
+            rem = s.get("total_remaining_bytes")
+            if rem is not None and total:
+                used = max(0, total - rem)
+        used = used or 0
+        return f"upload=0; download={int(used)}; total={int(total)}; expire=0"
 
     async def api_config(self, req):
         if self.pool is None or not self.pool.tokens:
