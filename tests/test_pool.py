@@ -281,12 +281,37 @@ def test_force_ipv4_egress():
     check(ip.count(".") == 3, f"localhost 解析为 IPv4（{ip}）")
 
 
+def test_runtime_user_agent():
+    print("[ua] 控制面 UA 可开关")
+    import requests
+    from fxproxy import guardian
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.json"
+        p.write_text('{"refresh_token":"T"}', encoding="utf-8")
+        check(cfgmod.load(p).get("runtime_user_agent") == "", "默认不伪装 UA")
+        os.environ["FXPROXY_RUNTIME_USER_AGENT"] = "firefox"
+        try:
+            check(cfgmod.load(p).get("runtime_user_agent") == "firefox",
+                  "环境变量可开启 UA")
+        finally:
+            os.environ.pop("FXPROXY_RUNTIME_USER_AGENT", None)
+    s = requests.Session()
+    guardian.set_default_user_agent("firefox")
+    guardian.apply_user_agent(s)
+    check(s.headers.get("User-Agent") == guardian.FIREFOX_UA, "firefox 映射到 FIREFOX_UA")
+    guardian.set_default_user_agent("")
+    guardian.apply_user_agent(s)
+    check(s.headers.get("User-Agent") == requests.utils.default_user_agent(),
+          "关闭后恢复 requests 默认 UA")
+
+
 if __name__ == "__main__":
     test_config_migration()
     test_env_deployment_overrides()
     test_subscription_uses_public_entry()
     test_port_helpers()
     test_force_ipv4_egress()
+    test_runtime_user_agent()
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()

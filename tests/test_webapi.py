@@ -89,6 +89,7 @@ async def main():
             web.post("/api/account/remove", panel.api_account_remove),
             web.post("/api/strategy", panel.api_strategy),
             web.post("/api/force-ipv4", panel.api_force_ipv4),
+            web.post("/api/runtime-ua", panel.api_runtime_ua),
             web.post("/api/login", panel.api_login),
             web.get("/api/config", panel.api_config),
             web.get("/api/servers", panel.api_servers),
@@ -179,6 +180,20 @@ async def main():
             check(stf.get("force_ipv4_egress") is True, "state 暴露开关状态")
             r = await cli.post("/api/force-ipv4", json={"enabled": False})
             check((await r.json()).get("force_ipv4_egress") is False, "可再次关闭")
+
+            print("[api] runtime UA 开关")
+            r = await cli.post("/api/runtime-ua", json={"enabled": True})
+            dua = await r.json()
+            check(dua.get("ok") and dua.get("runtime_user_agent") == "firefox",
+                  "开启 Firefox UA")
+            check(cfgmod.load(cfgpath).get("runtime_user_agent") == "firefox",
+                  "UA 开关已落盘")
+            check(panel.pool._session.headers.get("User-Agent") == guardian.FIREFOX_UA,
+                  "共享会话 UA 已热更新")
+            stu = await (await cli.get("/api/state")).json()
+            check(stu.get("runtime_user_agent") == "firefox", "state 暴露 UA 设置")
+            r = await cli.post("/api/runtime-ua", json={"enabled": False})
+            check((await r.json()).get("runtime_user_agent") == "", "可再次关闭")
 
             print("[api] login --append 语义")
             r = await cli.post("/api/login", json={"mode": "token", "refresh_token": "tokC"})

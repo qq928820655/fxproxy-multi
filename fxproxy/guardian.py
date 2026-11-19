@@ -37,6 +37,26 @@ PASS_REFRESH_MARGIN = 60
 # Refresh the access token this many seconds before it expires.
 ACCESS_REFRESH_MARGIN = 300
 
+# 运行时控制面请求（FxA 刷新 / fpn status / fpn token / serverlist）的
+# User-Agent。默认空 = 用 requests 自带 UA；配置成 "firefox" 时换成下面的
+# 值，避免 python-requests 这个显眼指纹。只影响控制面，不影响数据面隧道。
+FIREFOX_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) "
+              "Gecko/20100101 Firefox/134.0")
+_DEFAULT_UA = ""
+
+
+def set_default_user_agent(value) -> None:
+    """Set the UA applied to control-plane sessions. "firefox" → FIREFOX_UA."""
+    global _DEFAULT_UA
+    v = (value or "").strip()
+    _DEFAULT_UA = FIREFOX_UA if v.lower() == "firefox" else v
+
+
+def apply_user_agent(session):
+    """Apply the current default UA to a requests.Session (or restore default)."""
+    session.headers["User-Agent"] = _DEFAULT_UA or requests.utils.default_user_agent()
+    return session
+
 
 def _b64url_json(seg: str) -> dict:
     seg += "=" * (-len(seg) % 4)
@@ -82,6 +102,8 @@ class GuardianClient:
         self.client_id = client_id
         self.scope = scope
         self._s = session or requests.Session()
+        if session is None:
+            apply_user_agent(self._s)
         self._lock = threading.Lock()
 
         self._access_token: Optional[str] = None
@@ -304,6 +326,8 @@ class TokenPool:
         self._quota_cache: dict[int, tuple[float, dict]] = {}
         # One shared Session for the whole pool: fewer TCP/TLS handshakes.
         self._session = session or requests.Session()
+        if session is None:
+            apply_user_agent(self._session)
         self.clients: list[GuardianClient] = [
             GuardianClient(t, session=self._session) for t in tokens
         ]

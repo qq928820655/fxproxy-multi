@@ -33,6 +33,9 @@ DEFAULTS = {
     # 用 IPv4 连接目标，从而让目标站看到的出口 IP 是 IPv4。代价是本机要
     # 做 DNS 解析，且纯 IPv6 目标会连不上。
     "force_ipv4_egress": False,
+    # 运行时控制面请求的 User-Agent："" = requests 默认；"firefox" = 伪装
+    # 成 Firefox UA（降低 python-requests 指纹），也可填自定义字符串。
+    "runtime_user_agent": "",
 }
 
 _VALID_STRATEGIES = ("round-robin", "quota", "failover")
@@ -100,6 +103,9 @@ def load(path: Path | None = None) -> dict:
     if env_f4 is not None and env_f4.strip():
         cfg["force_ipv4_egress"] = env_f4.strip().lower() in (
             "1", "true", "yes", "on")
+    env_ua = os.environ.get("FXPROXY_RUNTIME_USER_AGENT")
+    if env_ua is not None:
+        cfg["runtime_user_agent"] = env_ua.strip()
 
     # ---- 订阅公网入口（容器/VPS 部署关键）----
     # 优先级：环境变量 > 配置文件 > 默认值；端口回退到实际监听端口。

@@ -20,7 +20,8 @@ from pathlib import Path
 from aiohttp import web
 
 from . import config as cfgmod
-from .guardian import GuardianClient, NotEnrolledError, TokenPool
+from .guardian import (GuardianClient, NotEnrolledError, TokenPool,
+                       set_default_user_agent, apply_user_agent)
 from .proxyserver import NodePicker, ProxyServer
 
 # fxa_auth（curl_cffi + pyfxa）只在登录时才用，延迟导入：
@@ -321,6 +322,12 @@ PAGE = r"""<!doctype html>
         出口强制 IPv4 <input type="checkbox" id="forceIpv4">
       </label>
       <span class="muted" style="font-size:12px;">域名先在本机解析为 IPv4 再连目标，出口 IP 走 IPv4；纯 IPv6 站点会连不上</span>
+    </div>
+    <div class="row" style="margin-bottom:12px;">
+      <label style="display:inline-flex;align-items:center;gap:8px;">
+        伪装 Firefox UA <input type="checkbox" id="spoofUa">
+      </label>
+      <span class="muted" style="font-size:12px;">仅控制面请求（刷新 token/取 pass/节点列表）换成 Firefox UA，降低 python-requests 指纹；不影响代理流量</span>
     </div>
     <table class="acct">
       <thead><tr><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
@@ -645,6 +652,7 @@ async function loadState(){
   $("listen").textContent = s.running ? egress : "";
   $("strategy").value = s.strategy || "round-robin";
   $("forceIpv4").checked = !!s.force_ipv4_egress;
+  $("spoofUa").checked = !!s.runtime_user_agent;
   $("acctCount").textContent = "("+(s.account_count||0)+" 个)";
   if(s.version){ $("verNow").textContent = "v"+s.version; $("verNow").className = "pill on"; }
   if(!userPicked && s.running && s.country){ $("country").value = s.country; updateNodeWarn(); }
@@ -798,6 +806,14 @@ $("forceIpv4").onchange = async () => {
   const r = await fetch("/api/force-ipv4",{method:"POST",
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({enabled:$("forceIpv4").checked})});
+  const d = await r.json();
+  if(d.error) alert("设置失败："+d.error);
+  await loadState();
+};
+$("spoofUa").onchange = async () => {
+  const r = await fetch("/api/runtime-ua",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({enabled:$("spoofUa").checked})});
   const d = await r.json();
   if(d.error) alert("设置失败："+d.error);
   await loadState();
@@ -972,6 +988,8 @@ class Panel:
     def __init__(self, config_path=None, web_host="127.0.0.1", web_port=8765):
         self.config_path = config_path
         self.cfg = cfgmod.load(config_path)
+        # 控制面 UA 必须在建池（创建 requests.Session）之前设置好
+        set_default_user_agent(self.cfg.get("runtime_user_agent", ""))
         self.pool = self._make_pool()
         self.srv = None
         self._st_srv = None
@@ -1107,6 +1125,7 @@ class Panel:
             "http_port": self.cfg.get("http_port", 8080),
             "socks_port": self.cfg.get("socks_port", 1080),
             "force_ipv4_egress": bool(self.cfg.get("force_ipv4_egress", False)),
+            "runtime_user_agent": self.cfg.get("runtime_user_agent", ""),
             "web_port": self.web_port,
             "version": _updater().VERSION,
             "platform": _updater().platform_tag(),
@@ -1319,6 +1338,27 @@ class Panel:
             if s is not None:
                 s.force_ipv4_egress = enabled
         return web.json_response({"ok": True, "force_ipv4_egress": enabled})
+
+    async def api_runtime_ua(self, req):
+        """Toggle Firefox UA spoofing for control-plane requests (token/status/
+        pass/serverlist). Data-plane tunnels are unaffected."""
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled"))
+        value = "firefox" if enabled else ""
+        self.cfg["runtime_user_agent"] = value
+        try:
+            cfgmod.save(self.cfg, self.config_path)
+        except Exception as e:
+            return web.json_response({"error": str(e)})
+        set_default_user_agent(value)
+        if self.pool is not None:
+            sess = getattr(self.pool, "_session", None)
+            if sess is not None:
+                apply_user_agent(sess)
+        return web.json_response({"ok": True, "runtime_user_agent": value})
 
     async def api_servers(self, req):
         # 服务器列表是 Mozilla 公开接口，不需要账号凭证；无账号时也要能列节点。
@@ -2613,6 +2653,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/account/remove", panel.api_account_remove),
         web.post("/api/strategy", panel.api_strategy),
         web.post("/api/force-ipv4", panel.api_force_ipv4),
+        web.post("/api/runtime-ua", panel.api_runtime_ua),
         web.get("/api/servers", panel.api_servers),
         web.get("/api/nodes", panel.api_nodes),
         web.post("/api/speedtest", panel.api_speedtest),
