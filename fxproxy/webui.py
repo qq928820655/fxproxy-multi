@@ -1270,13 +1270,31 @@ class Panel:
             marker = "proxy-groups:"
             if marker in text:
                 head, tail = text.split(marker, 1)
-                names = [f"      - fxproxy-{c}-{n}\n"
-                         for c, n, _, _ in (nodes or [(None, None, None, None)])]
-                group = ('      - "fxproxy-http"\n')
-                new_group = ("".join(names) if names
-                             else "      - fxproxy-vless-ws\n") + group
+                if nodes:
+                    names = "".join(f"      - fxproxy-{c}-{n}\n"
+                                    for c, n, _, _ in nodes)
+                    # 负载均衡组：网关单连接限速（~4Mbps），多连接并行可叠加
+                    # 到 14Mbps+。Clash 按连接分散到不同节点即多路并行。
+                    lb_group = (
+                        "\n  - name: \"fxproxy-auto\"\n"
+                        "    type: load-balance\n"
+                        "    url: https://www.gstatic.com/generate_204\n"
+                        "    interval: 300\n"
+                        "    strategy: round-robin\n"
+                        "    proxies:\n"
+                        + names
+                    )
+                    new_group = ("      - fxproxy-auto\n"
+                                 '      - "fxproxy-http"\n')
+                else:
+                    lb_group = ""
+                    new_group = ('      - fxproxy-vless-ws\n'
+                                 '      - "fxproxy-http"\n')
+                # per-node 节点进 proxies 列表；负载均衡组进 proxy-groups
                 text = (head.rstrip("\n") + "\n" + block
-                        + marker + tail.replace(group, new_group, 1))
+                        + marker + lb_group
+                        + tail.replace('      - "fxproxy-http"\n',
+                                       new_group, 1))
         return web.Response(
             text=text,
             content_type="text/yaml",
