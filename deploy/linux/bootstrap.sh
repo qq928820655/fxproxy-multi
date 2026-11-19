@@ -274,6 +274,22 @@ interactive_config() {
 
 # ---------------------------------------------------------------- 动作
 run_install() {
+  # Git Bash / MSYS 也能跑 bash，但这里是 Linux 安装逻辑（systemd、/opt、apt）。
+  # 提前拦下来，别让人一路装到 systemctl 才撞上看不懂的错。
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if [[ -z "${FXPROXY_ALLOW_WIN_BASH:-}" ]]; then
+        warn "检测到 Windows 的 bash（$REPO）。这是 Linux 安装脚本，装不了。"
+        printf '\n  Windows 用这条（PowerShell 窗口里粘贴）：\n' >&2
+        printf '    irm https://raw.githubusercontent.com/%s/%s/deploy/windows/bootstrap.ps1 -OutFile "$env:TEMP\\fx-boot.ps1"\n' "$REPO" "$BRANCH" >&2
+        printf '    powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\\fx-boot.ps1"\n\n' >&2
+        printf '  或者下载 zip 后双击 install.bat。\n' >&2
+        printf '  确实要在 Windows 的 bash 里硬跑，置 FXPROXY_ALLOW_WIN_BASH=1。\n\n' >&2
+        exit 1
+      fi
+      ;;
+  esac
+
   prepare_src
   local inst="$SRC/deploy/linux/install.sh"
   [[ -f "$inst" ]] || die "源码里没有 deploy/linux/install.sh"

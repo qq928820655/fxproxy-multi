@@ -3,6 +3,27 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 上游基线：`c4ba254`（ios151/firefox）。
 
+## [0.4.1] — 2026-11-19
+
+### 修复
+
+- **面板加不了第二个账号**：旧逻辑是「已有凭证 → `#loginCard` 永久 `display:none`」，
+  于是账号池非空之后「① 添加账号」整块消失，界面上没有任何入口能再追加账号。
+  现在「③ 账号池」右侧常驻「+ 添加账号」按钮，点开即用、可随时收起；
+  账号池为空时仍自动展开。
+- **面板卡在「加载中…」**：`/api/accounts`、`/api/nodes`、`/api/servers` 在机器取不到
+  外网时会一直挂着，前端没设超时，界面就永远停在「加载中…」（看起来像面板坏了）。
+  列表请求 25–30 秒、探测请求 150 秒超时，超时后显示「加载失败」而不是无限等。
+- **Windows 上 `curl -fsSL … | bash` 报「找不到与参数名称 fsSL 匹配的参数」**：
+  PowerShell 里裸 `curl` 是 `Invoke-WebRequest` 的别名，没有 `-fsSL`；而且
+  `deploy/linux/bootstrap.sh` 是 Linux 安装逻辑。新增 `deploy/windows/bootstrap.ps1`
+  与 `bootstrap.bat` 作为 Windows 版在线一键安装（取 Release zip → 校验结构 →
+  覆盖代码但保留 `config.json`/`.venv`/`.run` → 调 `install.ps1`），
+  直连失败自动挂 `ghproxy.net` / `gh-proxy.com` 重试。
+- **Linux bootstrap 在 Windows 的 bash 里硬跑**：识别 MSYS/MINGW/CYGWIN 后直接打印
+  Windows 的正确命令并退出，不再一路装到 `systemctl` 才报错
+  （`FXPROXY_ALLOW_WIN_BASH=1` 可强制放行）。
+
 ## [0.4.0] — 2026-11-19
 
 ### 新增

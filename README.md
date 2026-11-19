@@ -291,7 +291,7 @@ bash bootstrap.sh --help                      # 全部参数
 已经下好包的话：
 
 ```bash
-tar xzf fxproxy-0.4.0-linux.tar.gz && cd fxproxy-0.4.0
+tar xzf fxproxy-0.4.1-linux.tar.gz && cd fxproxy-0.4.1
 sudo ./deploy/linux/install.sh --token 你的refresh_token --country US
 ```
 

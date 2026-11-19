@@ -118,6 +118,31 @@ def main():
     check("start.bat" in ins, "快捷方式指向 start.bat")
     check(".PARAMETER Shortcut" in ins, "帮助里有 -Shortcut 说明")
 
+    print("\n[win] 在线部署（Windows 版 curl|bash）")
+    # PowerShell 的裸 curl 是 Invoke-WebRequest 别名，-fsSL 会直接报
+    # 「找不到与参数名称 fsSL 匹配的参数」；下载必须显式 curl.exe。
+    bs = WD / "bootstrap.ps1"
+    bb = WD / "bootstrap.bat"
+    check(bs.is_file() and bb.is_file(), "bootstrap.ps1 / bootstrap.bat 存在")
+    bst = bs.read_text(encoding="utf-8-sig")
+    check("Get-Command curl.exe" in bst, "下载走 curl.exe，不碰 PowerShell 的 curl 别名")
+    check("fsSL" in bst, "帮助里点明了 -fsSL 这个报错")
+    check("Invoke-WebRequest -Uri" in bst, "没有 curl.exe 时退回 Invoke-WebRequest")
+    check("releases/download" in bst, "按版本号直连 release 资产")
+    check("codeload.github.com" in bst, "取不到 Release 时退到分支源码包")
+    check("deploy\\windows\\install.ps1" in bst or "deploy\\\\windows\\\\install.ps1" in bst,
+          "解压后交给 install.ps1")
+    check("KeepCfg" in bst, "覆盖安装目录时保留 config.json")
+    check(".venv" in bst and ".run" in bst, "不覆盖运行态目录")
+    check("Uninstall" in bst, "支持 -Uninstall（不联网）")
+    check("-Shortcut" in bst and "NoShortcut" in bst, "默认建快捷方式，可 -NoShortcut 关掉")
+    check("ghproxy" in bst, "直连失败挂镜像重试")
+
+    bbt = bb.read_text(encoding="ascii")
+    check('bootstrap.ps1' in bbt, "bat 下的是 bootstrap.ps1")
+    check("%*" in bbt, "bat 把参数透传给 bootstrap.ps1")
+    check("ExecutionPolicy Bypass" in bbt, "bat 用 Bypass 跑，双开不被策略拦")
+
     print("\n[win] 卸载路径存在")
     check("Uninstall" in ins, "install.ps1 支持 -Uninstall")
     check("fxproxy-run" in ins or "schtasks" in ins.lower(),

@@ -130,7 +130,7 @@ PAGE = """<!doctype html>
   <div class="sub">Firefox IP Protection · 多账号池 · 每账号每月 50GB 落地代理</div>
 
   <div class="card" id="loginCard" style="display:none;">
-    <h2>① 添加账号</h2>
+    <h2>① 添加账号 <button id="addClose" class="sm" style="float:right;font-weight:400;">收起</button></h2>
     <div class="row">
       <label>方式</label>
       <select id="loginMode">
@@ -249,6 +249,7 @@ PAGE = """<!doctype html>
       </select>
       <button id="strategyBtn" class="sm">应用策略</button>
       <button id="refreshQuotaBtn" class="sm">刷新配额</button>
+      <button id="addToggle" class="primary sm">+ 添加账号</button>
     </div>
     <table>
       <thead><tr><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
@@ -301,7 +302,7 @@ let NODE_COUNTS = {};
 let NODE_LABELS = {};
 async function loadServers(){
   try{
-    const r = await fetch("/api/servers"); const d = await r.json();
+    const r = await timeoutFetch("/api/servers", null, 25000); const d = await r.json();
     const sel = $("country");
     const cur = sel.value;
     sel.innerHTML = '<option value="">任意（全球节点）</option>';
@@ -414,7 +415,8 @@ async function loadNodes(probe, egress){
     $("probeMsg").textContent = "逐节点实测出口 IP（16 并发，约 30-60 秒）…"; }
   const qs = (probe?"?probe=1":"") + (egress?(probe?"&":"?")+"egress=1":"");
   try{
-    const r = await fetch("/api/nodes"+qs);
+    // 探测类请求本身就要 30-60 秒，超时给宽一点；纯列表 30 秒
+    const r = await timeoutFetch("/api/nodes"+qs, null, (probe||egress)?150000:30000);
     const d = await r.json();
     if(d.error){ body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
     NODE_DATA = d.nodes||[]; NODE_PROBE = !!probe;
@@ -463,10 +465,26 @@ async function testNode(host){
 }
 
 let AUTHED = false, userPicked = false;
+// 添加账号卡片：没账号时自动展开；用户手动开/收过之后就不再自动跟随。
+// 旧逻辑写成「有账号 → 永久 display:none」，等于把加第二个账号的入口藏死了。
+let ADD_PINNED = false;
+function setAddOpen(v, auto){
+  $("loginCard").style.display = v ? "block" : "none";
+  $("addToggle").textContent = v ? "收起添加框" : "+ 添加账号";
+  $("addToggle").className = v ? "sm" : "primary sm";
+  if(!auto) ADD_PINNED = true;
+}
+// 后端在取不到外网时（拿 Mozilla 节点表 / 查配额）会卡住，请求不设超时
+// 前端就永远停在「加载中…」，看起来像面板坏了
+function timeoutFetch(url, opts, ms){
+  const c = new AbortController(), t = setTimeout(()=>c.abort(), ms||15000);
+  return fetch(url, Object.assign({}, opts||{}, {signal:c.signal}))
+    .finally(()=>clearTimeout(t));
+}
 async function loadState(){
-  const r = await fetch("/api/state"); const s = await r.json();
+  const r = await timeoutFetch("/api/state"); const s = await r.json();
   AUTHED = !!s.authed;
-  $("loginCard").style.display = AUTHED ? "none" : "block";
+  if(!ADD_PINNED) setAddOpen(!AUTHED, true);
   $("state").className = "pill "+(s.running?"on":"off");
   $("state").textContent = s.running ? "运行中" : (AUTHED ? "未运行" : "未登录");
   $("startBtn").disabled = !AUTHED; $("stopBtn").disabled = !s.running;
@@ -496,7 +514,7 @@ async function loadState(){
 }
 async function loadAccounts(){
   try{
-    const r = await fetch("/api/accounts"); const d = await r.json();
+    const r = await timeoutFetch("/api/accounts", null, 25000); const d = await r.json();
     const rows = (d.accounts||[]).map((a,i)=>{
       let st = a.ok ? '<span class="pill on">可用</span>'
                     : (a.cooling ? '<span class="pill cool">冷却</span>'
@@ -551,6 +569,9 @@ $("browserBtn").onclick = () => {
   $("loginMsg").textContent = "已请求打开浏览器，请在弹出的窗口里登录（或注册），完成后自动追加 …";
   doLogin({ mode:"browser" }, $("browserBtn"));
 };
+// 账号池右上角的入口：任何时候都能打开添加框，加完再收起
+$("addToggle").onclick = () => setAddOpen($("loginCard").style.display === "none");
+$("addClose").onclick = () => setAddOpen(false);
 async function removeAcct(i){
   if(!confirm("删除账号 #"+(i+1)+"？该操作立即生效。")) return;
   const r = await fetch("/api/account/remove",{method:"POST",

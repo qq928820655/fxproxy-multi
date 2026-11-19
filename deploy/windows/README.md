@@ -2,6 +2,40 @@
 
 双击 `install.bat` 即可。装完自动起代理和面板，浏览器会打开面板页。
 
+## 在线一行装（手上没有 zip 时）
+
+PowerShell 窗口里粘这一行，等价于 Linux 那条 `curl ... | bash`：
+
+```powershell
+irm https://raw.githubusercontent.com/qq928820655/fxproxy-multi/main/deploy/windows/bootstrap.ps1 -OutFile $env:TEMP\fx-boot.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\fx-boot.ps1
+```
+
+带参数往后接（参数和 `install.bat` 一致，另加 `-Dir / -Version / -GhProxy`）：
+
+```powershell
+& $env:TEMP\fx-boot.ps1 -Country US -NoStart
+& $env:TEMP\fx-boot.ps1 -Dir D:\fxproxy -GhProxy https://ghproxy.net/
+```
+
+它做的事：取最新 Release 的 `-win.zip` → 校验结构 → 覆盖到安装目录（`config.json` / `.venv` / `.run` 不动）→ 调 `install.ps1`。
+默认装到 `%LOCALAPPDATA%\fxproxy`，直连失败会自动试 `ghproxy.net`、`gh-proxy.com`。
+raw 都拿不到时用 `bootstrap.bat`（先下 ps1 再跑，双击也行）。
+
+## 为什么 `curl -fsSL ... | bash` 在 Windows 报错
+
+```
+Invoke-WebRequest : 找不到与参数名称"fsSL"匹配的参数。
+```
+
+两件事叠在一起：
+
+1. PowerShell 里裸 `curl` 是 `Invoke-WebRequest` 的别名，没有 `-fsSL` 这套参数——真 curl 得写 `curl.exe`，
+   别名的参数是 `-Uri / -OutFile`。所以这行在下载之前就挂了，跟网络无关。
+2. `deploy/linux/bootstrap.sh` 是 Linux 安装逻辑（systemd、`/opt`、apt/dnf）。就算用 `curl.exe` 把它下下来喂给
+   bash，在 Windows 上也装不成；脚本现在会识别 MSYS/MINGW 并直接给出 Windows 的正确命令。
+
+Windows 用上面的 `bootstrap.ps1` 或 `install.bat`。
+
 ## 做了什么
 
 1. 找 Python（>= 3.10）；没有就试 `winget install Python.Python.3.12`
@@ -14,6 +48,8 @@
 ## 参数
 
 ```bat
+bootstrap.bat                                 :: 在线装（自动下最新 Release）
+bootstrap.bat -Dir D://fxproxy -Country US      :: 指定目录与国家
 install.bat                                   :: 全交互
 install.bat -Country US                       :: 指定出口国家（留空=任意）
 install.bat -Country JP -HttpPort 8081 -SocksPort 1081 -WebPort 8766

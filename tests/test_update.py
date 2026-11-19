@@ -628,6 +628,10 @@ def test_bootstrap():
     check("codeload.github.com" in body, "release 取不到时退到分支源码包")
     check("git clone" in body, "再退到 git clone")
     check("install.sh" in body, "最终交给 install.sh 执行")
+    # Windows 的 Git Bash 也能跑 bash，但装不了 systemd 那套，要当场拦下并给对命令
+    check("MINGW" in body or "MSYS" in body, "识别 Windows 的 bash 并拦下")
+    check("deploy/windows/bootstrap.ps1" in body, "提示 Windows 该用 bootstrap.ps1")
+    check("FXPROXY_ALLOW_WIN_BASH" in body, "留了强制放行的开关")
     check("FXPROXY_GH_PROXY" in body, "支持镜像前缀")
     check("--purge" in body and "--uninstall" in body, "菜单里有卸载（含清凭证）")
     check("ask_yn" in body and "port_hint" in body, "有确认与端口占用提示")
