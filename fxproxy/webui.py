@@ -108,6 +108,12 @@ PAGE = r"""<!doctype html>
   .dropdown .menu button:hover:not(:disabled) { background:#21262d; }
   .dropdown .menu button:disabled { opacity:.45; cursor:not-allowed; }
   .dropdown .menu .hint { color:#8b949e; font-size:11px; padding:0 12px 6px; }
+  .dropdown .menu .sep { height:1px; background:#30363d; margin:4px 0; }
+  #flash { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+          background:#238636; color:#fff; padding:8px 16px; border-radius:6px;
+          font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.5); z-index:100;
+          opacity:0; pointer-events:none; transition:opacity .2s; }
+  #flash.show { opacity:1; }
   .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px;
           font-weight:600; white-space:nowrap; }
   .on { background:#238636; color:#fff; }
@@ -202,6 +208,7 @@ PAGE = r"""<!doctype html>
 </style>
 </head>
 <body>
+<div id="flash"></div>
 <div class="wrap">
   <h1>fxproxy 控制面板</h1>
   <div class="sub">Firefox IP Protection · 多账号池 · 每账号每月 50GB 落地代理</div>
@@ -334,10 +341,15 @@ PAGE = r"""<!doctype html>
       <div class="dropdown" id="exportDd">
         <button id="exportBtn" class="sm" disabled>导出选中 ▾</button>
         <div class="menu" id="exportMenu">
-          <button data-mode="token">refresh_token</button>
-          <button data-mode="cookie">Cookie / 插件导出</button>
-          <button data-mode="password" disabled title="登录后仅保存 refresh_token，未保存密码">邮箱 + 密码（不可用）</button>
-          <button data-mode="session" disabled title="登录后仅保存 refresh_token，未保存 sessionToken">sessionToken（不可用）</button>
+          <button data-mode="token" data-action="file">refresh_token</button>
+          <button data-mode="cookie" data-action="file">Cookie / 插件导出</button>
+          <button data-mode="password" data-action="file" disabled title="登录后仅保存 refresh_token，未保存密码">邮箱 + 密码（不可用）</button>
+          <button data-mode="session" data-action="file" disabled title="登录后仅保存 refresh_token，未保存 sessionToken">sessionToken（不可用）</button>
+          <div class="sep"></div>
+          <button data-mode="token" data-action="copy">复制 refresh_token</button>
+          <button data-mode="cookie" data-action="copy">复制 Cookie / 插件导出</button>
+          <button data-mode="password" data-action="copy" disabled title="登录后仅保存 refresh_token，未保存密码">复制 邮箱 + 密码（不可用）</button>
+          <button data-mode="session" data-action="copy" disabled title="登录后仅保存 refresh_token，未保存 sessionToken">复制 sessionToken（不可用）</button>
         </div>
       </div>
       <button id="addToggle" class="primary sm">+ 添加账号</button>
@@ -770,21 +782,46 @@ $("exportBtn").onclick = (e) => {
 document.addEventListener("click", (e) => {
   if(!e.target.closest("#exportDd")) $("exportDd").classList.remove("open");
 });
+function flash(msg){
+  const el = $("flash");
+  el.textContent = msg; el.classList.add("show");
+  clearTimeout(flash._t);
+  flash._t = setTimeout(()=>el.classList.remove("show"), 1800);
+}
+async function copyText(text){
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(text); return true;
+    }
+  }catch(e){}
+  try{
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand("copy"); ta.remove(); return ok;
+  }catch(e){ return false; }
+}
 $("exportMenu").querySelectorAll("button").forEach(btn => {
   btn.onclick = () => {
     if(btn.disabled) return;
     $("exportDd").classList.remove("open");
-    doExport(btn.dataset.mode);
+    doExport(btn.dataset.mode, btn.dataset.action || "file");
   };
 });
-async function doExport(mode){
+async function doExport(mode, action){
   const idx = Array.from(SELECTED).sort((a,b)=>a-b);
   if(!idx.length){ alert("请先勾选账号"); return; }
   const r = await fetch("/api/accounts/export",{method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify({indices:idx, mode:mode})});
   const d = await r.json();
   if(d.error){ alert("导出失败："+d.error); return; }
-  const blob = new Blob([JSON.stringify(d,null,2)],{type:"application/json"});
+  const text = JSON.stringify(d, null, 2);
+  if(action === "copy"){
+    const ok = await copyText(text);
+    flash(ok ? ("已复制 "+idx.length+" 个账号") : "复制失败，请改用下载");
+    return;
+  }
+  const blob = new Blob([text],{type:"application/json"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = "fxproxy-"+mode+"-"+new Date().toISOString().slice(0,10)+".json";
