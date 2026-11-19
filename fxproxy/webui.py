@@ -962,15 +962,206 @@ class Panel:
             pass
         return downstream
 
+    # ---- built-in vless server: one WS path per Fastly node -----------
+
+    _nodes_cache: dict = {"data": None, "ts": 0.0}
+
+    async def _public_nodes(self):
+        """[(code, zh_name, host, port)] with a 300s cache; public list."""
+        import time as _t
+        c = Panel._nodes_cache
+        if c["data"] is not None and _t.monotonic() - c["ts"] < 300:
+            return c["data"]
+        from . import geo
+
+        def _fetch():
+            gc = GuardianClient("")
+            out = []
+            for code, meta in gc.nodes_by_country().items():
+                zh, _ = geo.label(code, meta.get("name"))
+                for h, p in meta["nodes"]:
+                    out.append((code, zh, h, int(p)))
+            out.sort()
+            return out
+        try:
+            c["data"] = await asyncio.to_thread(_fetch)
+            c["ts"] = _t.monotonic()
+        except Exception:
+            c["data"] = c["data"] or []
+        return c["data"]
+
+    async def _vless_open_tunnel(self, node_host, node_port,
+                                 target_host, target_port):
+        """Open the Fastly tunnel pinned to one node, walking the account
+        pool on auth failures (same policy as ProxyServer._open_tunnel)."""
+        if self.pool is None or not self.pool.tokens:
+            raise web.HTTPServiceUnavailable(text="no account in pool")
+        bench = ProxyServer(
+            self.pool, NodePicker(self.pool.clients[0], None, node_host),
+            failover=1,
+        )
+        accounts = self.pool.pick_many(len(self.pool.clients))
+        last_err = None
+        for _idx, gc in accounts:
+            try:
+                jwt = await asyncio.to_thread(gc.proxy_pass)
+            except Exception as e:
+                last_err = e
+                self.pool.report_failure(gc)
+                continue
+            try:
+                reader, writer, leftover, _ = await bench._connect_one(
+                    node_host, node_port, target_host, target_port, jwt
+                )
+                return reader, writer, leftover
+            except Exception as e:
+                last_err = e
+                if "401" in str(e) or "403" in str(e):
+                    self.pool.report_failure(gc)
+        raise ConnectionError(f"tunnel via {node_host} failed: {last_err!r}")
+
+    async def ws_vless(self, req):
+        """Built-in minimal vless-over-ws server, one path per node.
+
+        Path: /vless/<fastly-hostname> — the slug pins the egress node.
+        Wire format (first frames, may be split): version(1) uuid(16)
+        addonLen(1) addon command(1) port(2, BE) addrType(1) addr, then
+        raw payload; everything after handshake is a plain bidirectional
+        pipe between the WebSocket and the Fastly TLS tunnel.
+        """
+        uuid_hex = self._bridge_uuid()
+        if not uuid_hex:
+            raise web.HTTPNotFound()
+        slug = req.match_info.get("slug", "").strip().lower()
+        nodes = await self._public_nodes()
+        node = next((n for n in nodes if n[2] == slug), None)
+        if node is None:
+            # unknown slug: only Fastly list members are allowed as egress
+            raise web.HTTPNotFound()
+        node_host, node_port = node[2], node[3]
+
+        ws = web.WebSocketResponse(autoping=True, max_msg_size=4 * 1024 * 1024)
+        await ws.prepare(req)
+
+        buf = b""
+
+        async def _need(n):
+            nonlocal buf
+            while len(buf) < n:
+                msg = await ws.receive()
+                if msg.type != web.WSMsgType.BINARY:
+                    raise ConnectionError("client closed during handshake")
+                buf += msg.data
+            out, buf = buf[:n], buf[n:]
+            return out
+
+        try:
+            expected = bytes.fromhex(uuid_hex.replace("-", ""))
+            await _need(1)                                    # version
+            got = await _need(16)                             # uuid
+            if got != expected:
+                await ws.close(code=web.WSCloseCode.VIOLATED_POLICY)
+                return ws
+            addon_len = (await _need(1))[0]
+            if addon_len:
+                await _need(addon_len)
+            cmd = (await _need(1))[0]
+            if cmd != 1:                                      # TCP only
+                raise ConnectionError(f"unsupported vless command {cmd}")
+            port = int.from_bytes(await _need(2), "big")
+            atyp = (await _need(1))[0]
+            if atyp == 1:
+                import socket as _s
+                target = _s.inet_ntoa(await _need(4))
+            elif atyp == 2:
+                ln = (await _need(1))[0]
+                target = (await _need(ln)).decode("idna")
+            elif atyp == 3:
+                import socket as _s
+                target = _s.inet_ntop(_s.AF_INET6, await _need(16))
+            else:
+                raise ConnectionError(f"bad addrType {atyp}")
+
+            reader, writer, leftover = await self._vless_open_tunnel(
+                node_host, node_port, target, port
+            )
+        except Exception:
+            try:
+                await ws.close(code=web.WSCloseCode.ABNORMAL_CLOSURE)
+            except Exception:
+                pass
+            return ws
+
+        # vless response header: version 0, no addons
+        await ws.send_bytes(b"\x00\x00")
+
+        async def _w2t():
+            nonlocal buf
+            if buf:
+                writer.write(buf)
+                await writer.drain()
+                buf = b""
+            async for msg in ws:
+                if msg.type == web.WSMsgType.BINARY:
+                    writer.write(msg.data)
+                    await writer.drain()
+                else:
+                    break
+
+        async def _t2w():
+            try:
+                if leftover:
+                    await ws.send_bytes(leftover)
+                while True:
+                    data = await reader.read(65536)
+                    if not data:
+                        break
+                    await ws.send_bytes(data)
+            except Exception:
+                pass
+
+        try:
+            await asyncio.gather(_w2t(), _t2w())
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        return ws
+
     async def api_sub(self, req):
-        """vless:// share link (base64 wrapped) for v2rayN / sing-box."""
+        """vless:// share links (base64 wrapped) for v2rayN / sing-box.
+
+        When the bridge is deployed and reached via a public host, one
+        entry per Fastly node is emitted so clients can hand-pick the
+        egress; without bridge only the generic link is returned.
+        """
         server = self._bridge_host(req)
         if not self._bridge_available(server):
             return web.json_response({"error": "vless bridge not deployed"})
-        link = (f"vless://{self._bridge_uuid()}@{server}:443"
+        uuid = self._bridge_uuid()
+        nodes = await self._public_nodes()
+        lines = []
+        if nodes:
+            for code, name, host, port in nodes:
+                label = f"{code}-{name}"
+                lines.append(
+                    f"vless://{uuid}@{server}:443"
+                    f"?encryption=none&security=tls&sni={server}"
+                    f"&type=ws&host={server}"
+                    f"&path=%2Fvless%2F{host}"
+                    f"#{label}"
+                )
+        else:
+            lines.append(
+                f"vless://{uuid}@{server}:443"
                 f"?encryption=none&security=tls&sni={server}"
                 f"&type=ws&host={server}&path=%2Fvless#fxproxy-bridge")
-        b64 = base64.b64encode((link + "\n").encode()).decode()
+        b64 = base64.b64encode(("\n".join(lines) + "\n").encode()).decode()
         return web.Response(
             text=b64,
             content_type="text/plain",
@@ -983,6 +1174,9 @@ class Panel:
         The proxy host defaults to the Host header used to reach this panel
         (LAN IP / VPS domain), so importing from another device just works.
         A configured ``sub_server`` overrides it for split-horizon setups.
+        When the vless bridge is deployed over a public host, one
+        ``fxproxy-<code>`` node per Fastly location is appended so clients
+        can hand-pick the egress node from the subscription itself.
         """
         from . import clashconf
         host = req.host.split(":", 1)[0]  # strip panel port
@@ -996,26 +1190,48 @@ class Panel:
             socks_port=self.cfg.get("sub_socks_port") or self.cfg.get("socks_port", 1080),
         )
         if self._bridge_available(server):
-            vless_node = (
-                "  - name: \"fxproxy-vless-ws\"\n"
-                "    type: vless\n"
-                f"    server: {server}\n"
-                "    port: 443\n"
-                f"    uuid: {self._bridge_uuid()}\n"
-                "    tls: true\n"
-                f"    servername: {server}\n"
-                "    network: ws\n"
-                "    ws-opts:\n"
-                "      path: /vless\n"
-                "    udp: false\n"
-            )
+            nodes = await self._public_nodes()
+            per_node = []
+            if nodes:
+                for code, name, nh, nport in nodes:
+                    per_node.append(
+                        f"  - name: \"fxproxy-{code}-{name}\"\n"
+                        "    type: vless\n"
+                        f"    server: {server}\n"
+                        "    port: 443\n"
+                        f"    uuid: {self._bridge_uuid()}\n"
+                        "    tls: true\n"
+                        f"    servername: {server}\n"
+                        "    network: ws\n"
+                        "    ws-opts:\n"
+                        f"      path: /vless/{nh}\n"
+                        "    udp: false\n"
+                    )
+            else:
+                per_node.append(
+                    "  - name: \"fxproxy-vless-ws\"\n"
+                    "    type: vless\n"
+                    f"    server: {server}\n"
+                    "    port: 443\n"
+                    f"    uuid: {self._bridge_uuid()}\n"
+                    "    tls: true\n"
+                    f"    servername: {server}\n"
+                    "    network: ws\n"
+                    "    ws-opts:\n"
+                    "      path: /vless\n"
+                    "    udp: false\n"
+                )
+            block = "".join(per_node) + "\n"
             marker = "proxy-groups:"
             if marker in text:
                 head, tail = text.split(marker, 1)
-                text = (head.rstrip("\n") + "\n" + vless_node + "\n"
-                        + marker + tail.replace(
-                            '      - "fxproxy-http"\n',
-                            '      - fxproxy-vless-ws\n      - "fxproxy-http"\n', 1))
+                names = [f"      - fxproxy-{c}-{n}\n"
+                         for c, n, _, _ in (nodes or [(None, None, None, None)])]
+                group = ('      - "fxproxy-http"\n')
+                new_group = ("".join(names) if names
+                             else "      - fxproxy-vless-ws\n") + group
+                text = (head.rstrip("\n") + "\n" + block
+                        + marker + tail.replace(group, new_group, 1))
         return web.Response(
             text=text,
             content_type="text/yaml",
@@ -1076,6 +1292,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/speedtest", panel.api_speedtest),
         web.get("/ws-echo", panel.ws_echo),
         web.get("/vless", panel.ws_bridge),
+        web.get(r"/vless/{slug:.+}", panel.ws_vless),
         web.get("/sub", panel.api_sub),
         web.post("/api/start", panel.api_start),
         web.post("/api/stop", panel.api_stop),
