@@ -241,8 +241,15 @@ fxproxy web        # 启动后自动打开 http://127.0.0.1:8765
 > fxproxy token        # 打印 refresh_token + 服务器写入命令；纯脚本用 `fxproxy token -q`
 > ```
 
-保存成功后接着下拉选出口国家、一键**启动/停止**代理、实时看**配额剩余**、点「测试出口 IP」验证落地。
+保存成功后接着下拉选出口国家、一键**启动/停止**代理、实时看**额度使用**、点「测试出口 IP」验证落地。
 （不想自动开浏览器加 `--no-open`，改端口加 `--web-port 9000`。）
+
+面板的出口国家下拉按**洲域分组**、显示中文国名与节点数（亚洲/欧洲/北美洲/南美洲/非洲/大洋洲），
+每 60 秒自动刷新一次；列表来自 Mozilla 公开的 `vpn-serverlist`，无需登录就能拉取，登录后立即重新加载。
+
+额度列显示「已用 X / 月度总额」：额度数字来自 Guardian 的 `X-Quota-Limit` / `X-Quota-Remaining`
+响应头，月度总额取自 status 的 `maxBytes`（每账号 50GiB）。只有 status 明确 `limited_bandwidth=false`
+且响应头确认 unlimited 时才显示「不限量」——不会把还没取到用量的 50GB 账号误判成无限。
 
 也可以用交互式命令行菜单——直接运行、不带参数即进入，按数字选指令：
 
@@ -438,5 +445,6 @@ journalctl -u fxproxy@$USER -f
 | `fxproxy/clashconf.py`   | 生成 Clash/Mihomo 订阅 YAML（指向本地 HTTP/SOCKS5 监听） |
 | `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口、cookie 导入 |
 | `fxproxy/cli.py`         | 命令行入口（login / accounts / status / token / servers / run / web） |
+| `fxproxy/geo.py`         | 国家代码 → 中文名/洲域映射，节点下拉分组与 CLI servers 用 |
 | `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken，六种格式导出 |
 | `chrome-extension/formats.js` | 六种导出格式（JSON/lines/cookie/netscape/csv/accounts）的纯函数实现 |

@@ -141,9 +141,16 @@ class GuardianClient:
 
         Keys: uid, max_bytes, subscribed, limited_bandwidth,
               remaining_bytes, used_bytes, reset (ISO), unlimited.
+
+        ``limited_bandwidth`` from the status endpoint is authoritative for
+        whether the account has a cap; the x-quota-unlimited header only tells
+        us the header set is absent. A 50GB account that has not minted a pass
+        yet still has maxBytes set — never report it as unlimited in that case.
         """
         s = self.status()
-        max_bytes = int(s.get("maxBytes", 0))
+        max_bytes = int(s.get("maxBytes", 0) or 0)
+        limited = bool(s.get("limited_bandwidth", False))
+        subscribed = bool(s.get("subscribed", False))
         # populate quota headers by minting a proxy pass
         try:
             self.proxy_pass()
@@ -153,15 +160,18 @@ class GuardianClient:
         limit = q.get("limit") or max_bytes
         remaining = q.get("remaining")
         used = (limit - remaining) if (limit and remaining is not None) else None
+        # 真实额度判定：status 明确限量 → 有限；只有 status 说不限量且 header
+        # 也确认 unlimited 时才算无限。避免把 50GB 账号误显示成"无限"。
+        unlimited = (not limited) and bool(q.get("unlimited", False))
         return {
             "uid": s.get("uid"),
-            "max_bytes": max_bytes,
-            "subscribed": bool(s.get("subscribed", False)),
-            "limited_bandwidth": bool(s.get("limited_bandwidth", False)),
+            "max_bytes": limit,
+            "subscribed": subscribed,
+            "limited_bandwidth": limited,
             "remaining_bytes": remaining,
             "used_bytes": used,
             "reset": q.get("reset"),
-            "unlimited": q.get("unlimited", False),
+            "unlimited": unlimited,
         }
 
     # ---- proxy pass ---------------------------------------------------
@@ -414,14 +424,19 @@ class TokenPool:
     def summary(self) -> dict:
         """Aggregate quota across accounts for the CLI/panel."""
         snaps = self.quota_snapshot()
-        totals = [s.get("remaining_bytes") for s in snaps
-                  if s.get("ok") and s.get("remaining_bytes") is not None]
-        unlimited = any(s.get("unlimited") for s in snaps)
+        good = [s for s in snaps if s.get("ok")]
+        totals = [s["remaining_bytes"] for s in good
+                  if s.get("remaining_bytes") is not None]
+        useds = [s["used_bytes"] for s in good if s.get("used_bytes") is not None]
+        maxes = [s["max_bytes"] for s in good if s.get("max_bytes")]
+        unlimited = all(s.get("unlimited") for s in snaps) and bool(snaps)
         return {
             "accounts": len(snaps),
-            "ok_accounts": sum(1 for s in snaps if s.get("ok")),
+            "ok_accounts": len(good),
             "snapshots": snaps,
-            "total_remaining_bytes": (None if unlimited or not totals else sum(totals)),
+            "total_remaining_bytes": (None if not totals else sum(totals)),
+            "total_used_bytes": (sum(useds) if useds else None),
+            "total_max_bytes": (sum(maxes) if maxes else None),
             "unlimited": unlimited,
             "strategy": self.strategy,
         }

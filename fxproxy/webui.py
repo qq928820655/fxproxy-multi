@@ -139,7 +139,7 @@ PAGE = """<!doctype html>
       <button id="refreshQuotaBtn" class="sm">刷新配额</button>
     </div>
     <table>
-      <thead><tr><th>#</th><th>uid</th><th>状态</th><th>剩余 / 月度</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
       <tbody id="acctBody"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
     </table>
     <div class="kv" style="margin-top:10px;"><span>总剩余</span><b id="totalRemain">—</b></div>
@@ -173,20 +173,45 @@ function fmt(b){ if(b==null) return "—"; const u=["B","KiB","MiB","GiB","TiB"]
   while(v>=1024&&i<u.length-1){v/=1024;i++;} return v.toFixed(v<10&&i>0?2:0)+u[i]; }
 
 let NODE_COUNTS = {};
+let NODE_LABELS = {};
 async function loadServers(){
-  const r = await fetch("/api/servers"); const d = await r.json();
-  const sel = $("country");
-  sel.innerHTML = '<option value="">任意</option>';
-  (d.countries||[]).forEach(c => { const o=document.createElement("option");
-    o.value=c.code; o.textContent=c.code+" — "+c.name+" ("+c.nodes+")"; sel.appendChild(o);
-    NODE_COUNTS[c.code] = c.nodes; });
-  updateNodeWarn();
+  try{
+    const r = await fetch("/api/servers"); const d = await r.json();
+    const sel = $("country");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">任意（全球节点）</option>';
+    NODE_COUNTS = {}; NODE_LABELS = {};
+    const groups = {};
+    (d.countries||[]).forEach(c => {
+      NODE_COUNTS[c.code] = c.nodes;
+      NODE_LABELS[c.code] = c.name;
+      (groups[c.continent||"其他"] ||= []).push(c);
+    });
+    const order = ["亚洲","欧洲","北美洲","南美洲","非洲","大洋洲","特殊","其他"];
+    order.filter(k => groups[k]).forEach(cont => {
+      const og = document.createElement("optgroup"); og.label = cont;
+      groups[cont].forEach(c => {
+        const o=document.createElement("option");
+        o.value=c.code; o.textContent=c.name+" ("+c.code+") · "+c.nodes+" 节点";
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+    if(cur && $(`country option[value="${cur}"]`)) sel.value = cur;
+    if(d.error){ $("nodeWarn").style.display="block";
+      $("nodeWarn").textContent="⚠ 节点列表加载失败："+d.error; }
+    updateNodeWarn();
+  }catch(e){
+    $("nodeWarn").style.display="block";
+    $("nodeWarn").textContent="⚠ 节点列表加载失败："+e;
+  }
 }
 function updateNodeWarn(){
   const code = $("country").value, n = NODE_COUNTS[code];
   if(code && n === 1){
     $("nodeWarn").style.display = "block";
-    $("nodeWarn").textContent = "⚠ 该国仅 1 个节点，偶发超时无法自动切换，建议改用 US / GB / DE。";
+    const nm = NODE_LABELS[code]||code;
+    $("nodeWarn").textContent = `⚠ ${nm} 仅 1 个节点，偶发超时无法自动切换，建议改用美国 / 英国 / 德国。`;
   } else { $("nodeWarn").style.display = "none"; }
 }
 let AUTHED = false, userPicked = false;
@@ -215,18 +240,29 @@ async function loadAccounts(){
       let st = a.ok ? '<span class="pill on">可用</span>'
                     : (a.cooling ? '<span class="pill cool">冷却</span>'
                                  : '<span class="pill off">异常</span>');
+      // 进度条按"剩余占比"画；只有额度已知才有意义
       const pct = (a.remaining_bytes!=null && a.max_bytes)
-        ? Math.max(0,100*a.remaining_bytes/a.max_bytes) : 0;
-      const rem = a.unlimited ? "无限"
-        : (a.remaining_bytes!=null ? fmt(a.remaining_bytes)+" / "+fmt(a.max_bytes)
-                                   : (a.error||"—").slice(0,32));
+        ? Math.max(0,Math.min(100,100*a.remaining_bytes/a.max_bytes)) : 0;
+      // 额度列：优先展示 已用 / 月度总额；剩余未知但有总额时显示 已用?/总额
+      let rem;
+      if(a.unlimited){ rem = "不限量"; }
+      else if(a.used_bytes!=null && a.max_bytes){
+        rem = "已用 "+fmt(a.used_bytes)+" / "+fmt(a.max_bytes);
+      } else if(a.remaining_bytes!=null && a.max_bytes){
+        rem = "剩 "+fmt(a.remaining_bytes)+" / "+fmt(a.max_bytes);
+      } else if(a.max_bytes){
+        rem = "月度 "+fmt(a.max_bytes)+" · 用量待取";
+      } else { rem = (a.error||"—").slice(0,32); }
       return `<tr><td>#${i+1}</td><td>${a.uid||"—"}</td><td>${st}</td>
         <td>${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
         <td><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
     });
     $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="5" class="muted">无账号</td></tr>';
-    $("totalRemain").textContent = d.unlimited ? "无限"
-      : (d.total_remaining_bytes!=null ? fmt(d.total_remaining_bytes) : "部分未知");
+    const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
+    $("totalRemain").textContent = d.unlimited ? "不限量"
+      : ((d.total_used_bytes!=null && d.total_max_bytes!=null)
+         ? "已用 "+fmt(d.total_used_bytes)+" / "+fmt(d.total_max_bytes)
+         : (remTxt || (d.total_max_bytes!=null ? "月度 "+fmt(d.total_max_bytes)+" · 用量待取" : "部分未知")));
   }catch(e){ $("acctBody").innerHTML = '<tr><td colspan="5" class="muted">加载失败</td></tr>'; }
 }
 $("loginMode").onchange = () => {
@@ -244,7 +280,7 @@ async function doLogin(body, btn){
   $("loginMsg").textContent = d.error ? ("失败："+d.error)
     : ("成功，现有 "+(d.account_count||1)+" 个账号");
   $("password").value = ""; $("sessionToken").value = ""; $("refreshToken").value = ""; $("cookieData").value = "";
-  await loadState(); await loadAccounts();
+  await loadServers(); await loadState(); await loadAccounts();
 }
 $("loginBtn").onclick = () => doLogin({ mode:$("loginMode").value,
     email:$("email").value, password:$("password").value,
@@ -309,7 +345,8 @@ $("testBtn").onclick = async () => {
   const r = await fetch("/api/egress"); const d = await r.json();
   $("egress").textContent = d.ip ? ("当前出口 IP："+d.ip) : ("测试失败："+(d.error||"")); };
 (async()=>{ await loadServers(); await loadState(); await loadAccounts();
-  setInterval(loadAccounts, 15000); setInterval(loadState, 5000); })();
+  setInterval(loadAccounts, 15000); setInterval(loadState, 5000);
+  setInterval(loadServers, 60000); })();
 </script>
 </body>
 </html>"""
@@ -381,6 +418,8 @@ class Panel:
         return web.json_response({
             "accounts": rows,
             "total_remaining_bytes": s["total_remaining_bytes"],
+            "total_used_bytes": s.get("total_used_bytes"),
+            "total_max_bytes": s.get("total_max_bytes"),
             "unlimited": s["unlimited"],
             "strategy": s["strategy"],
         })
@@ -425,14 +464,25 @@ class Panel:
             return web.json_response({"error": str(e)})
 
     async def api_servers(self, req):
-        if self.pool is None:
-            return web.json_response({"countries": [], "error": "无账号"})
+        # 服务器列表是 Mozilla 公开接口，不需要账号凭证；无账号时也要能列节点。
+        # 用临时 client 拉取，避免依赖 self.pool 存在。
+        from . import geo
         try:
-            picker = NodePicker(self.pool.clients[0], None)
+            probe = GuardianClient("")
+            picker = NodePicker(probe, None)
             await asyncio.to_thread(picker.refresh)
-            out = [{"code": c, "name": v.get("name", c), "nodes": len(v["nodes"])}
-                   for c, v in sorted(picker._by_country.items())]
-            return web.json_response({"countries": out})
+            merged: dict[str, dict] = {}
+            for code, meta in picker._by_country.items():
+                zh, continent = geo.label(code, meta.get("name"))
+                if code not in merged:
+                    merged[code] = {"code": code, "name": zh, "name_en": meta.get("name", code),
+                                    "continent": continent, "nodes": 0}
+                merged[code]["nodes"] += len(meta["nodes"])
+            ordered = sorted(merged.items(), key=geo.sort_key)
+            return web.json_response({
+                "countries": [v for _, v in ordered],
+                "error": None,
+            })
         except Exception as e:
             return web.json_response({"countries": [], "error": str(e)})
 

@@ -56,6 +56,13 @@ def fake_quota(self):
 
 async def main():
     guardian.GuardianClient.quota = fake_quota  # 打桩，避免外网
+    # 服务器列表也打桩：api_servers 用公开 client，不能让它真的上网
+    guardian.GuardianClient.nodes_by_country = lambda self: {
+        "US": {"name": "United States", "nodes": [("a", 2499), ("b", 2499)]},
+        "US-2": {"name": "United States", "nodes": [("c", 2499)]},
+        "CN": {"name": "China", "nodes": [("d", 2499)]},
+        "ZZ": {"name": "Zedland", "nodes": [("e", 2499)]},
+    }
 
     # cookie 模式的 sessionToken 分支要调 bootstrap，用桩替换掉重型依赖
     def fake_fxa():
@@ -81,6 +88,7 @@ async def main():
             web.post("/api/strategy", panel.api_strategy),
             web.post("/api/login", panel.api_login),
             web.get("/api/config", panel.api_config),
+            web.get("/api/servers", panel.api_servers),
             web.get("/clash.yaml", panel.api_clash),
         ])
         async with TestClient(TestServer(app)) as cli:
@@ -96,6 +104,16 @@ async def main():
             check(len(a["accounts"]) == 2, "账号列表 2 条")
             check(a["total_remaining_bytes"] == 80 * 1024**3, "配额汇总 80GiB")
             check(all(x["ok"] for x in a["accounts"]), "账号健康状态")
+
+            print("[api] servers 中文/洲域")
+            r = await cli.get("/api/servers")
+            sv = await r.json()
+            bycode = {c["code"]: c for c in sv["countries"]}
+            check("US" in bycode and bycode["US"]["name"] == "美国", "servers 返回中文国名")
+            check(bycode["US"]["continent"] == "北美洲", "servers 返回洲域")
+            check("CN" in bycode and bycode["CN"]["name"] == "中国", "CN 映射中国")
+            check("ZZ" in bycode and bycode["ZZ"]["continent"] == "其他", "未映射代码回退到其他")
+            check("已用 / 月度" in (await (await cli.get("/")).text()), "面板表头改为已用/月度")
 
             print("[api] strategy")
             r = await cli.post("/api/strategy", json={"strategy": "quota"})

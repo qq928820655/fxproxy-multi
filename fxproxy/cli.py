@@ -173,22 +173,31 @@ def cmd_accounts(args):
     now = __import__("time").monotonic()
     snaps = pool.quota_snapshot()
     print(f"策略: {pool.strategy}   账号数: {len(pool.clients)}   冷却: {pool.cooldown}s\n")
-    total = 0
-    total_known = True
     for i, (c, q) in enumerate(zip(pool.clients, snaps)):
         cooling = pool._cool_until.get(i, 0) > now
         tag = "冷却中" if cooling else "可用"
-        rem = q.get("remaining_bytes")
+        used, mx, rem = q.get("used_bytes"), q.get("max_bytes"), q.get("remaining_bytes")
         if q.get("unlimited"):
-            rem_s, known = "无限", False
-        elif rem is None:
-            rem_s, known = q.get("error", "—")[:40], False
+            quota_s = "不限量"
+        elif used is not None and mx:
+            quota_s = f"已用 {_fmt_bytes(used)} / {_fmt_bytes(mx)}"
+        elif rem is not None and mx:
+            quota_s = f"剩 {_fmt_bytes(rem)} / {_fmt_bytes(mx)}"
+        elif mx:
+            quota_s = f"月度 {_fmt_bytes(mx)} · 用量待取"
         else:
-            rem_s, known = _fmt_bytes(rem), True
-            total += rem
-        total_known &= known
-        print(f"  #{i + 1}  uid={str(q.get('uid') or '—'):<18} {tag:<6} 剩余 {rem_s}")
-    print(f"\n总剩余: {'无限' if any(s.get('unlimited') for s in snaps) else (_fmt_bytes(total) if total_known else '部分未知')}")
+            quota_s = str(q.get("error") or "—")[:40]
+        print(f"  #{i + 1}  uid={str(q.get('uid') or '—'):<18} {tag:<6} {quota_s}")
+    s = pool.summary()
+    if s["unlimited"]:
+        total_s = "不限量"
+    elif s.get("total_used_bytes") is not None and s.get("total_max_bytes") is not None:
+        total_s = f"已用 {_fmt_bytes(s['total_used_bytes'])} / {_fmt_bytes(s['total_max_bytes'])}"
+    elif s["total_remaining_bytes"] is not None:
+        total_s = "剩 " + _fmt_bytes(s["total_remaining_bytes"])
+    else:
+        total_s = "部分未知"
+    print(f"\n总计: {total_s}")
     return 0
 
 
@@ -216,18 +225,29 @@ def cmd_status(args):
     print(f"strategy         : {s['strategy']}")
     print(f"accounts         : {s['accounts']} ({ok} ok)")
     for i, q in enumerate(s["snapshots"]):
-        rem = "unlimited" if q.get("unlimited") else _fmt_bytes(q.get("remaining_bytes"))
-        print(f"  #{i + 1} uid={q.get('uid')}  remaining={rem}  ok={q.get('ok')}")
+        if q.get("unlimited"):
+            quota = "unlimited"
+        elif q.get("used_bytes") is not None and q.get("max_bytes"):
+            quota = f"used={_fmt_bytes(q['used_bytes'])}/{_fmt_bytes(q['max_bytes'])}"
+        else:
+            quota = "remaining=" + _fmt_bytes(q.get("remaining_bytes"))
+        print(f"  #{i + 1} uid={q.get('uid')}  {quota}  ok={q.get('ok')}")
     return 0
 
 
 def cmd_servers(args):
-    pool = _pool(args)
-    gc = pool.clients[0]  # 服务器列表是公开的，用任一账号拉取即可
-    by = gc.nodes_by_country()
-    for code in sorted(by):
-        print(f"{code}  {by[code]['name']:20} {len(by[code]['nodes'])} node(s)")
-    print(f"\n{len(by)} countries")
+    from . import geo
+    # 服务器列表是 Mozilla 公开接口，不需要账号凭证
+    by = GuardianClient("").nodes_by_country()
+    merged: dict[str, dict] = {}
+    for code, meta in by.items():
+        zh, continent = geo.label(code, meta.get("name"))
+        if code not in merged:
+            merged[code] = {"name": zh, "continent": continent, "nodes": 0}
+        merged[code]["nodes"] += len(meta["nodes"])
+    for code, meta in sorted(merged.items(), key=geo.sort_key):
+        print(f"{meta['continent']:<8} {code:<4} {meta['name']:<12} {meta['nodes']} 节点")
+    print(f"\n{len(merged)} 个国家/地区")
     return 0
 
 

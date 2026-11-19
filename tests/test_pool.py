@@ -112,6 +112,40 @@ def test_account_auth_failure_is_distinct():
     check(len(srv.pool.clients) == 1, "传 GuardianClient 自动包成单账号池")
 
 
+def test_quota_not_falsely_unlimited():
+    """status.limited_bandwidth 是权威：50GB 账号不能被 header 误判为无限。"""
+    print("[pool] 配额 unlimited 判定")
+    gc = GuardianClient("qt")
+    # 模拟 status: 50GB 限量账号
+    gc.status = lambda: {"uid": 42, "maxBytes": "53687091200",
+                         "subscribed": True, "limited_bandwidth": True}
+    gc.proxy_pass = lambda: "tok"  # 不真的取 header，_quota_hdr 保持空
+    q = gc.quota()
+    check(q["unlimited"] is False, "status 限量 + 无 header 时 not unlimited")
+    check(q["max_bytes"] == 53687091200, "max_bytes 回退到 status.maxBytes")
+    check(q["used_bytes"] is None, "无 header 时 used 为 None 而非编造")
+
+    # 模拟 status 说不限量 + header 确认 unlimited
+    gc.status = lambda: {"uid": 42, "maxBytes": "0",
+                         "subscribed": True, "limited_bandwidth": False}
+    gc._quota_hdr = {"unlimited": True, "limit": None, "remaining": None}
+    q2 = gc.quota()
+    check(q2["unlimited"] is True, "status 不限量 + header 确认 → unlimited")
+
+    print("[pool] summary 总量字段")
+    pool = TokenPool(["a", "b"])
+    pool.quota_snapshot = lambda: [
+        {"ok": True, "unlimited": False, "used_bytes": 100, "max_bytes": 1000,
+         "remaining_bytes": 900},
+        {"ok": True, "unlimited": False, "used_bytes": 50, "max_bytes": 500,
+         "remaining_bytes": 450},
+    ]
+    s = pool.summary()
+    check(s["total_used_bytes"] == 150, "summary 汇总已用")
+    check(s["total_max_bytes"] == 1500, "summary 汇总总额")
+    check(s["unlimited"] is False, "summary unlimited 全真才真")
+
+
 if __name__ == "__main__":
     test_config_migration()
     test_pool_round_robin()
@@ -119,5 +153,6 @@ if __name__ == "__main__":
     test_pool_cooldown_all()
     test_pool_add_remove()
     test_pool_quota_weight()
+    test_quota_not_falsely_unlimited()
     test_account_auth_failure_is_distinct()
     print(f"\nALL PASS ({PASS} checks)")
