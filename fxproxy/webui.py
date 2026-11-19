@@ -591,10 +591,11 @@ async function loadAccounts(){
     });
     $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无账号</td></tr>';
     const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
-    // Firefox 一旦报告真实用量就以它为准；不计量（免费账号恒 0）时才用本地观测兜底
+    // 已用：优先用后端对齐后的 display_used_bytes（Firefox 基线 + 其后本地新增）
     const localUsed = d.local_used_bytes||0;
     const ffUsed = d.total_used_bytes;
-    const usedShown = (ffUsed!=null && ffUsed>0) ? ffUsed : localUsed;
+    const usedShown = (d.display_used_bytes!=null) ? d.display_used_bytes
+      : ((ffUsed!=null && ffUsed>0) ? ffUsed : localUsed);
     $("totalRemain").textContent = d.unlimited ? "不限量"
       : ((usedShown!=null && d.total_max_bytes!=null)
          ? "已用 "+fmt(usedShown)+" / "+fmt(d.total_max_bytes)
@@ -834,9 +835,11 @@ class Panel:
     def _load_traffic(self) -> dict:
         try:
             d = json.loads(self._traffic_path().read_text())
-            return {"up": int(d.get("up", 0)), "down": int(d.get("down", 0))}
+            return {"up": int(d.get("up", 0)), "down": int(d.get("down", 0)),
+                    "ff_seen": int(d.get("ff_seen", 0)),
+                    "offset": int(d.get("offset", 0))}
         except Exception:
-            return {"up": 0, "down": 0}
+            return {"up": 0, "down": 0, "ff_seen": 0, "offset": 0}
 
     def _save_traffic(self):
         try:
@@ -861,6 +864,36 @@ class Panel:
 
     def _local_used(self) -> int:
         return int(self._traffic.get("up", 0)) + int(self._traffic.get("down", 0))
+
+    def _apply_usage_baseline(self, ff_used) -> int:
+        """把 Firefox 的权威用量与本地计量对齐，返回要展示的已用字节。
+
+        对应「Firefox 刷新后要在新值基础上继续累加」：
+          * Firefox 报了一个新值（与上次不同）→ 以它为基线，记
+            ``offset = ff_used - local_now``，此后 display = local + offset，
+            也就是「Firefox 值 + 它之后本地新增的流量」。
+          * Firefox 值没变 → 继续 local + offset 平滑增长。
+          * Firefox 为 0（免费账号不计量）→ 清掉基线，display = local。
+          * 取不到（None，例如本次刷新失败）→ 保持既有基线，避免数字抖动。
+        """
+        local_now = self._local_used()
+        if ff_used is None:
+            if int(self._traffic.get("ff_seen", 0)) > 0:
+                return local_now + int(self._traffic.get("offset", 0))
+            return local_now
+        ff_used = int(ff_used)
+        if ff_used > 0:
+            if ff_used != int(self._traffic.get("ff_seen", 0)):
+                self._traffic["ff_seen"] = ff_used
+                self._traffic["offset"] = ff_used - local_now
+                self._save_traffic()
+            return local_now + int(self._traffic.get("offset", 0))
+        # Firefox 不计量：基线归零
+        if int(self._traffic.get("ff_seen", 0)) or int(self._traffic.get("offset", 0)):
+            self._traffic["ff_seen"] = 0
+            self._traffic["offset"] = 0
+            self._save_traffic()
+        return local_now
 
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
@@ -1054,6 +1087,7 @@ class Panel:
                                       "local_down_bytes": int(self._traffic.get("down", 0))})
         s = self.pool.summary()
         rows = self._account_rows()
+        display_used = self._apply_usage_baseline(s.get("total_used_bytes"))
         return web.json_response({
             "accounts": rows,
             "total_remaining_bytes": s["total_remaining_bytes"],
@@ -1064,6 +1098,7 @@ class Panel:
             "local_used_bytes": self._local_used(),
             "local_up_bytes": int(self._traffic.get("up", 0)),
             "local_down_bytes": int(self._traffic.get("down", 0)),
+            "display_used_bytes": display_used,
         })
 
     async def api_accounts_refresh(self, req):
@@ -2256,10 +2291,10 @@ class Panel:
         unix timestamp (0 = no expiry). ``total=0`` is rendered as unlimited by
         the clients, which matches accounts with no cap.
 
-        Firefox 免费账号的 x-quota 头始终返回满额（不会扣减）。逻辑：
-        Firefox 一旦报告真实用量（used>0）就以它为准——它涵盖该账号所有
-        客户端，是额度的权威来源；只有当 Firefox 不计量（used 恒为 0）时，
-        才用本地按转发字节累计的观测值兜底。
+        Firefox 免费账号的 x-quota 头始终返回满额（不会扣减）。逻辑见
+        ``_apply_usage_baseline``：Firefox 一旦报告真实用量就以它为基线，
+        之后在它的基础上继续叠加本地新增；Firefox 不计量（恒为 0）时才
+        纯用本地观测兜底。
         """
         if self.pool is None:
             return None
@@ -2275,16 +2310,13 @@ class Panel:
             rem = s.get("total_remaining_bytes")
             if rem is not None and total:
                 ff_used = max(0, total - rem)
-        ff_used = int(ff_used or 0)
-        local_up = int(self._traffic.get("up", 0))
-        local_down = int(self._traffic.get("down", 0))
-        if ff_used > 0:
-            # Firefox 已扣减：以权威值为准，不再叠加本地观测，避免重复计数
-            upload, download = 0, ff_used
-        elif local_up or local_down:
-            upload, download = local_up, local_down
+        used = self._apply_usage_baseline(ff_used)
+        if int(self._traffic.get("ff_seen", 0)) > 0:
+            # 有 Firefox 基线：总量已含基线，无法拆分上下行，全部计入 download
+            upload, download = 0, used
         else:
-            upload, download = 0, 0
+            upload = int(self._traffic.get("up", 0))
+            download = int(self._traffic.get("down", 0))
         return (f"upload={upload}; download={download}; "
                 f"total={int(total)}; expire=0")
 

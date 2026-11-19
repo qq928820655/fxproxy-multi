@@ -248,11 +248,11 @@ async def main():
             check(f"download={exp_used}" in ui and f"total={exp_total}" in ui
                   and "upload=0" in ui and "expire=0" in ui,
                   f"订阅带配额头 subscription-userinfo（实得 {ui!r}）")
-            # Firefox 报告真实用量时以其为准（涵盖所有客户端），不叠加本地观测
+            # Firefox 报真实用量时先采纳为新基线
             panel._add_traffic(1111, 2222)
             ui2 = (await cli.get("/clash.yaml")).headers.get("subscription-userinfo", "")
-            check(f"download={exp_used}" in ui2 and "upload=0" in ui2,
-                  f"Firefox 有真实用量时优先（实得 {ui2!r}）")
+            check(f"download={exp_used + 3333}" in ui2 and "upload=0" in ui2,
+                  f"Firefox 基线上继续叠加本地新增（实得 {ui2!r}）")
             # Firefox 不计量（used=0，免费账号常态）时才回落到本地观测
             orig_summary = panel.pool.summary
             panel.pool.summary = lambda: {
@@ -264,6 +264,18 @@ async def main():
                 panel.pool.summary = orig_summary
             check("upload=1111" in ui3 and "download=2222" in ui3,
                   f"Firefox 不计量时用本地兜底（实得 {ui3!r}）")
+            # 直接复现用户场景：0 → 本地 10M → Firefox 20M → 再加 2M = 22M
+            saved = dict(panel._traffic)
+            panel._traffic.update({"up": 0, "down": 0, "ff_seen": 0, "offset": 0})
+            panel._add_traffic(0, 10 * 1024**2)
+            check(panel._apply_usage_baseline(0) == 10 * 1024**2,
+                  "Firefox=0 时显示本地 10M")
+            check(panel._apply_usage_baseline(20 * 1024**2) == 20 * 1024**2,
+                  "Firefox 刷新到 20M 时采纳为新基线")
+            panel._add_traffic(0, 2 * 1024**2)
+            check(panel._apply_usage_baseline(20 * 1024**2) == 22 * 1024**2,
+                  "20M 基础上继续累加本地新增到 22M")
+            panel._traffic.clear(); panel._traffic.update(saved); panel._save_traffic()
 
             print("[api] clash.yaml?provider=1 —— mihomo proxy-provider 形态")
             rp = await cli.get("/clash.yaml?provider=1")
