@@ -97,6 +97,7 @@ async def main():
             web.get("/api/nodes", panel.api_nodes),
             web.post("/api/nodes/disable", panel.api_node_disable),
             web.post("/api/start", panel.api_start),
+            web.post("/api/speedtest", panel.api_speedtest),
             web.post("/api/ports", panel.api_ports),
             web.get("/clash.yaml", panel.api_clash),
         ])
@@ -302,6 +303,61 @@ async def main():
             d8 = await r.json()
             check(d8.get("ok") and d8["added"] == 1, "cookie 模式: Cookie 头格式导入")
             check(R2 in panel.pool.tokens, "cookie 模式: refresh token 直接入池")
+
+            print("[api] 测速/出口探测计入本地流量")
+            _saved_traffic = dict(panel._traffic)
+            class _FakeSrv:
+                def __init__(self, *a, **k):
+                    pass
+                async def start(self):
+                    pass
+                async def stop(self):
+                    pass
+            _old_ps = webui_mod.ProxyServer
+            _old_thread = asyncio.to_thread
+
+            async def _fake_thread(fn, *a, **k):
+                return {"bytes": 1234567, "seconds": 1.0, "mbps": 9.9}
+
+            webui_mod.ProxyServer = _FakeSrv
+            asyncio.to_thread = _fake_thread
+            try:
+                before = panel._local_used()
+                r = await cli.post("/api/speedtest", json={"node": "a"})
+                ds = await r.json()
+                check(ds.get("ok") and panel._local_used() - before == 1234567,
+                      "测速下载量计入本地统计")
+            finally:
+                webui_mod.ProxyServer = _old_ps
+                asyncio.to_thread = _old_thread
+
+            class _R:
+                async def read(self, n):
+                    return b"HTTP/1.1 200 OK\r\n\r\n1.2.3.4"
+
+            class _W:
+                def write(self, b):
+                    pass
+                async def drain(self):
+                    pass
+                def close(self):
+                    pass
+
+            async def _fake_open(host, port, th, tp):
+                return _R(), _W(), b""
+
+            _old_open = panel._vless_open_tunnel
+            panel._vless_open_tunnel = _fake_open
+            try:
+                before = panel._local_used()
+                host, ip = await panel._probe_egress("h", 1, asyncio.Semaphore(1))
+                check(ip == "1.2.3.4", "出口探测解析出 IP")
+                check(panel._local_used() > before, "出口探测流量计入本地统计")
+            finally:
+                panel._vless_open_tunnel = _old_open
+            # 还原流量计数，避免污染后续订阅头断言
+            panel._traffic.clear()
+            panel._traffic.update(_saved_traffic)
 
             print("[api] 面板 HTML")
             r = await cli.get("/")

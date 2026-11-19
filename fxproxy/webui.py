@@ -1782,6 +1782,8 @@ class Panel:
                     return {"bytes": got, "seconds": round(dt, 2),
                             "mbps": round(got * 8 / dt / 1e6, 1)}
                 res = await asyncio.to_thread(_bench)
+                # 测速经隧道下载的字节同样消耗账号额度，计入本地统计
+                self._add_traffic(0, int(res.get("bytes", 0)))
                 return web.json_response({"ok": True, **res})
             except Exception as e:
                 return web.json_response({"error": str(e)})
@@ -2200,10 +2202,13 @@ class Panel:
                     self._vless_open_tunnel(host, port, "api.ipify.org", 80),
                     timeout=30,
                 )
-                writer.write(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\n"
-                             b"Connection: close\r\n\r\n")
+                req = (b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\n"
+                       b"Connection: close\r\n\r\n")
+                writer.write(req)
                 await writer.drain()
                 data = await asyncio.wait_for(reader.read(4096), timeout=10)
+                # 出口探测也走隧道，收发字节计入本地统计（每节点约几十字节）
+                self._add_traffic(len(req), len(data))
                 writer.close()
                 body = (data.split(b"\r\n\r\n", 1)[1]
                         if b"\r\n\r\n" in data else b"").decode(errors="replace").strip()
