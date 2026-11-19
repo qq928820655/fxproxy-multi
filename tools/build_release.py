@@ -30,7 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 
 # 整目录收进去的
-DIRS = ("fxproxy", "deploy", "tools", "tests", "bridge", "chrome-extension", "docs")
+DIRS = ("fxproxy", "deploy", "tools", "tests", "bridge", "chrome-extension",
+        "docs", "muxserver")
 # 单个文件收进去的
 FILES = (
     "README.md",
@@ -69,24 +70,28 @@ def version() -> str:
     return m.group(1)
 
 
-def _wanted(rel: Path) -> bool:
+def _wanted(rel: Path, plat: str = "all") -> bool:
     if any(p in SKIP_DIRS for p in rel.parts[:-1]):
         return False
     if rel.name in SKIP_NAMES:
         return False
     if rel.name.endswith(SKIP_SUFFIX):
         return False
+    # muxserver 的编译产物是 Linux ELF：只进 Linux 包。塞进 Windows 包既跑不了
+    # 又白占 8MB；Windows 上要 mux 效果就自己 go build 一份。
+    if rel.parts[:2] == ("muxserver", "muxserver") and plat != "linux":
+        return False
     return True
 
 
-def collect() -> list[Path]:
+def collect(plat: str = "all") -> list[Path]:
     out: list[Path] = []
     for d in DIRS:
         base = ROOT / d
         if not base.is_dir():
             continue
         for p in sorted(base.rglob("*")):
-            if p.is_file() and _wanted(p.relative_to(ROOT)):
+            if p.is_file() and _wanted(p.relative_to(ROOT), plat):
                 out.append(p)
     for f in FILES:
         p = ROOT / f
@@ -95,9 +100,9 @@ def collect() -> list[Path]:
     return out
 
 
-def build(out_path: Path, top: str) -> dict:
+def build(out_path: Path, top: str, plat: str = "win") -> dict:
     """Windows zip 包。"""
-    files = collect()
+    files = collect(plat)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         out_path.unlink()
@@ -109,9 +114,9 @@ def build(out_path: Path, top: str) -> dict:
             "bytes": out_path.stat().st_size}
 
 
-def build_tar(out_path: Path, top: str) -> dict:
+def build_tar(out_path: Path, top: str, plat: str = "linux") -> dict:
     """Linux tar.gz 包：保留 .sh 的 0755，否则解压后跑不起来。"""
-    files = collect()
+    files = collect(plat)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         out_path.unlink()
@@ -122,8 +127,10 @@ def build_tar(out_path: Path, top: str) -> dict:
             info = tf.gettarinfo(str(p), arcname=f"{top}/{rel.as_posix()}")
             info.uid = info.gid = 0
             info.uname = info.gname = "root"
-            # 只有部署脚本需要可执行位；其它给 0644，避免带上本机 umask 的痕迹
-            info.mode = 0o755 if p.suffix == ".sh" else 0o644
+            # 部署脚本和 muxserver 二进制要可执行位；其它给 0644，
+            # 避免把本机 umask 的痕迹带进包里
+            needs_x = p.suffix == ".sh" or rel.parts[:2] == ("muxserver", "muxserver")
+            info.mode = 0o755 if needs_x else 0o644
             with open(p, "rb") as fh:
                 tf.addfile(info, fh)
             count += 1
@@ -155,7 +162,8 @@ def verify_tar(path: Path, top: str) -> tuple[bool, list[str]]:
             problems.append(f"混进了不该带的文件：{m.name}")
         if "__pycache__" in m.name or base.endswith(".pyc"):
             problems.append(f"混进了缓存：{m.name}")
-        if base.endswith(".sh") and not (m.mode & 0o111):
+        if (base.endswith(".sh") or m.name.endswith("/muxserver/muxserver")) \
+                and not (m.mode & 0o111):
             problems.append(f"{m.name} 没有可执行位（mode {oct(m.mode)}）")
         if "\r" in (m.name or ""):
             problems.append(f"{m.name} 名字里有 CR")
