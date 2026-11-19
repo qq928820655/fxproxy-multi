@@ -138,7 +138,7 @@ def verify_tar(path: Path, top: str) -> tuple[bool, list[str]]:
         names = {m.name for m in members}
         crlf = []
         for m in members:
-            if m.name.endswith(".sh"):
+            if m.name.endswith(".sh") or m.name.endswith(".service.in"):
                 data = tf.extractfile(m).read()
                 if b"\r\n" in data:
                     crlf.append(m.name)
@@ -189,7 +189,7 @@ def verify(path: Path, top: str) -> tuple[bool, list[str]]:
     # Linux 脚本混进 CRLF 会 bad interpreter（zip 给两边用，一并查）
     with zipfile.ZipFile(path) as zf:
         for n in names:
-            if n.endswith(".sh") and b"\r\n" in zf.read(n):
+            if (n.endswith(".sh") or n.endswith(".service.in")) and b"\r\n" in zf.read(n):
                 problems.append(f"{n} 是 CRLF，bash 会报 bad interpreter")
     return (not problems), problems
 
