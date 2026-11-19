@@ -1274,6 +1274,8 @@ class Panel:
                         w.close()
                     except Exception:
                         pass
+            # 无空闲连接时现场握手。必须在锁外做：mux 会话下多条流会
+            # 并发 acquire，锁内握手会把跨区 TLS 串行化（30 流 ≈ 9s+）。
             return await self._open(host, port)
 
         async def _replenish(self, host, port):
@@ -1456,6 +1458,13 @@ class Panel:
             else:
                 raise ConnectionError(f"bad addrType {atyp}")
 
+            if "mux.sing-box.arpa" in target:
+                # sing-mux 会话：把整条 wss 桥接到本地 Go mux 服务端，
+                # 由它解复用；每个流再回到本面板按普通 vless 开 Fastly
+                # 隧道。这样浏览器几十条连接只占一条到网关的 wss。
+                await self._serve_mux_session(ws, buf, node_host, node_port)
+                return ws
+
             reader, writer, leftover = await self._vless_open_tunnel(
                 node_host, node_port, target, port
             )
@@ -1469,7 +1478,6 @@ class Panel:
             return ws
 
         # vless response header: version 0, no addons
-        print(f"[vless] 隧道建立 {target}:{port} via {node_host}", flush=True)
         try:
             await ws.send_bytes(b"\x00\x00")
         except Exception:
@@ -1522,8 +1530,6 @@ class Panel:
             for t in (t_up, t_down):
                 if not t.done():
                     t.cancel()
-            print(f"[vless] 结束 {target}:{port} up={_stat['up']}B "
-                  f"down={_stat['down']}B", flush=True)
             try:
                 writer.close()
             except Exception:
@@ -1533,6 +1539,153 @@ class Panel:
             except Exception:
                 pass
         return ws
+
+    async def _serve_mux_session(self, ws, buf, node_host, node_port):
+        """Bridge a sing-mux wss session to the local Go mux server.
+
+        The Go process demultiplexes the session and forwards each stream to
+        a per-session ephemeral local port as ``socks5-addr + payload``. The
+        per-stream handler below opens the pinned Fastly tunnel and pipes it.
+        """
+        mux_port = 19998
+        session = {"w": None}
+
+        async def on_stream(reader, writer):
+            up_w = None
+            try:
+                atyp = (await reader.readexactly(1))[0]
+                import socket as _s
+                if atyp == 1:
+                    th = _s.inet_ntoa(await reader.readexactly(4))
+                elif atyp == 3:
+                    ln = (await reader.readexactly(1))[0]
+                    th = (await reader.readexactly(ln)).decode("ascii", "replace")
+                elif atyp == 4:
+                    th = _s.inet_ntop(_s.AF_INET6, await reader.readexactly(16))
+                else:
+                    return
+                tp = int.from_bytes(await reader.readexactly(2), "big")
+                r, up_w, leftover = await self._vless_open_tunnel(
+                    node_host, node_port, th, tp)
+                if leftover:
+                    writer.write(leftover)
+                    await writer.drain()
+
+                async def c2t():
+                    try:
+                        while True:
+                            d = await reader.read(65536)
+                            if not d:
+                                break
+                            up_w.write(d)
+                            await up_w.drain()
+                    except Exception:
+                        pass
+
+                async def t2c():
+                    try:
+                        while True:
+                            d = await r.read(65536)
+                            if not d:
+                                break
+                            writer.write(d)
+                            await writer.drain()
+                    except Exception:
+                        pass
+
+                t1 = asyncio.create_task(c2t())
+                t2 = asyncio.create_task(t2c())
+                try:
+                    await asyncio.wait({t1, t2},
+                                       return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for t in (t1, t2):
+                        if not t.done():
+                            t.cancel()
+            except Exception:
+                pass
+            finally:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+                if up_w is not None:
+                    try:
+                        up_w.close()
+                    except Exception:
+                        pass
+
+        try:
+            server = await asyncio.start_server(on_stream, "127.0.0.1", 0)
+        except Exception:
+            await ws.close()
+            return
+        try:
+            port = server.sockets[0].getsockname()[1]
+            try:
+                gr, gw = await asyncio.open_connection("127.0.0.1", mux_port)
+            except Exception:
+                print(f"[mux] 无法连接本地 mux 服务端 {mux_port}",
+                      flush=True)
+                await ws.close()
+                return
+            session["w"] = gw
+            gw.write(port.to_bytes(2, "big"))
+            await gw.drain()
+            # vless 响应头，客户端跳过 2 字节后开始读 mux 帧
+            try:
+                await ws.send_bytes(b"\x00\x00")
+            except Exception:
+                return
+            if buf:
+                gw.write(buf)
+                await gw.drain()
+
+            async def ws2go():
+                try:
+                    async for msg in ws:
+                        if msg.type == web.WSMsgType.BINARY:
+                            gw.write(msg.data)
+                            await gw.drain()
+                        else:
+                            break
+                except Exception:
+                    pass
+
+            async def go2ws():
+                try:
+                    while True:
+                        d = await gr.read(65536)
+                        if not d:
+                            break
+                        await ws.send_bytes(d)
+                except Exception:
+                    pass
+
+            t1 = asyncio.create_task(ws2go())
+            t2 = asyncio.create_task(go2ws())
+            try:
+                await asyncio.wait({t1, t2},
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for t in (t1, t2):
+                    if not t.done():
+                        t.cancel()
+        finally:
+            try:
+                server.close()
+            except Exception:
+                pass
+            w = session.get("w")
+            if w is not None:
+                try:
+                    w.close()
+                except Exception:
+                    pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     async def api_sub(self, req):
         """vless:// share links (base64 wrapped) for v2rayN / sing-box.
@@ -1607,6 +1760,10 @@ class Panel:
                         "    ws-opts:\n"
                         f"      path: /vless/{nh}\n"
                         "    udp: false\n"
+                        "    smux:\n"
+                        "      enabled: true\n"
+                        "      protocol: smux\n"
+                        "      max-streams: 16\n"
                     )
             else:
                 per_node.append(
@@ -1621,6 +1778,10 @@ class Panel:
                     "    ws-opts:\n"
                     "      path: /vless\n"
                     "    udp: false\n"
+                    "    smux:\n"
+                    "      enabled: true\n"
+                    "      protocol: smux\n"
+                    "      max-streams: 16\n"
                 )
             block = "".join(per_node) + "\n"
             marker = "proxy-groups:"
@@ -1742,6 +1903,43 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         loop.set_default_executor(ThreadPoolExecutor(max_workers=64))
 
     app.on_startup.append(_enlarge_executor)
+
+    async def _start_muxserver(_app):
+        # 若外部已在 19998 上跑着 muxserver，直接复用。
+        try:
+            _r, _w = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", 19998), timeout=0.5)
+            _w.close()
+            print("[mux] 复用已在运行的 muxserver :19998")
+            return
+        except Exception:
+            pass
+        import os as _os
+        import subprocess as _sp
+        base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        exe = _os.environ.get("FXPROXY_MUXSERVER") or _os.path.join(
+            base, "muxserver", "muxserver")
+        if not _os.path.exists(exe):
+            print("[mux] 未找到 muxserver，多路复用不可用（普通 vless 仍工作）")
+            return
+        try:
+            proc = _sp.Popen([exe, "127.0.0.1:19998"],
+                             stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            panel._mux_proc = proc
+            print(f"[mux] muxserver 已启动 pid={proc.pid}")
+        except Exception as e:
+            print(f"[mux] muxserver 启动失败: {e!r}")
+
+    async def _stop_muxserver(_app):
+        proc = getattr(panel, "_mux_proc", None)
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    app.on_startup.append(_start_muxserver)
+    app.on_cleanup.append(_stop_muxserver)
     app.add_routes([
         web.get("/", panel.index),
         web.get("/api/state", panel.api_state),
