@@ -471,6 +471,7 @@ class Panel:
         self.srv = None
         self._st_srv = None
         self._st_lock = asyncio.Lock()
+        self._bench = None
 
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
@@ -1038,18 +1039,26 @@ class Panel:
     async def _vless_open_tunnel(self, node_host, node_port,
                                  target_host, target_port):
         """Open the Fastly tunnel pinned to one node, walking the account
-        pool on auth failures (same policy as ProxyServer._open_tunnel)."""
+        pool on auth failures (same policy as ProxyServer._open_tunnel).
+
+        JWT is taken from the client cache on the hot path (no thread-pool
+        hop); only an expired pass pays the to_thread round-trip. A single
+        reused ProxyServer supplies the TLS context so bursts of Clash
+        health checks don't churn SSLContexts.
+        """
         if self.pool is None or not self.pool.tokens:
             raise web.HTTPServiceUnavailable(text="no account in pool")
-        bench = ProxyServer(
-            self.pool, NodePicker(self.pool.clients[0], None, node_host),
-            failover=1,
-        )
+        if self._bench is None:
+            self._bench = ProxyServer(
+                self.pool, NodePicker(self.pool.clients[0], None), failover=1)
+        bench = self._bench
         accounts = self.pool.pick_many(len(self.pool.clients))
         last_err = None
         for _idx, gc in accounts:
             try:
-                jwt = await asyncio.to_thread(gc.proxy_pass)
+                jwt = gc._pass
+                if not jwt or time.time() >= gc._pass_exp - 60:
+                    jwt = await asyncio.to_thread(gc.proxy_pass)
             except Exception as e:
                 last_err = e
                 self.pool.report_failure(gc)
@@ -1273,8 +1282,15 @@ class Panel:
                 if nodes:
                     names = "".join(f"      - fxproxy-{c}-{n}\n"
                                     for c, n, _, _ in nodes)
-                    # 负载均衡组：网关单连接限速（~4Mbps），多连接并行可叠加
-                    # 到 14Mbps+。Clash 按连接分散到不同节点即多路并行。
+                    # 负载均衡组只放主力节点：34 个全塞进去会让 Clash 每轮
+                    # 健康检查并发建 34 条隧道（面板 2 核 CPU 上 3-4s），
+                    # 主力 10 个足够并行提速，全量节点仍可在列表里手选。
+                    HOT = ("US", "JP", "KR", "SG", "DE", "GB", "NL", "FR",
+                           "CA", "AU")
+                    lb_members = "".join(f"      - fxproxy-{c}-{n}\n"
+                                         for c, n, _, _ in nodes if c in HOT)
+                    if not lb_members:
+                        lb_members = names
                     lb_group = (
                         "\n  - name: \"fxproxy-auto\"\n"
                         "    type: load-balance\n"
@@ -1282,10 +1298,9 @@ class Panel:
                         "    interval: 300\n"
                         "    strategy: round-robin\n"
                         "    proxies:\n"
-                        + names
+                        + lb_members
                     )
-                    new_group = ("      - fxproxy-auto\n"
-                                 '      - "fxproxy-http"\n')
+                    new_group = "      - fxproxy-auto\n"
                 else:
                     lb_group = ""
                     new_group = ('      - fxproxy-vless-ws\n'
@@ -1343,6 +1358,14 @@ class Panel:
 def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=True):
     panel = Panel(config_path)
     app = web.Application()
+
+    async def _enlarge_executor(_app):
+        # Default asyncio pool is min(32, cpu+4) = 6 on 2-core hosts, which
+        # serialises Clash health checks across 34 nodes. Widen it.
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=64))
+
+    app.on_startup.append(_enlarge_executor)
     app.add_routes([
         web.get("/", panel.index),
         web.get("/api/state", panel.api_state),
