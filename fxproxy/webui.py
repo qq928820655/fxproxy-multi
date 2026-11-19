@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
+import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.request
 import webbrowser
 
@@ -69,6 +72,12 @@ PAGE = """<!doctype html>
   th, td { text-align:left; padding:8px 6px; border-bottom:1px solid #21262d; }
   th { color:#8b949e; font-weight:600; font-size:12px; }
   td .bar { margin-top:4px; }
+  .nodescroll { max-height:320px; overflow:auto; margin-top:10px; }
+  .nodescroll thead th { position:sticky; top:0; background:#161b22; z-index:1; }
+  td.lat-fast { color:#3fb950; font-weight:600; }
+  td.lat-mid  { color:#d29922; font-weight:600; }
+  td.lat-slow { color:#e3853c; font-weight:600; }
+  td.lat-fail { color:#f85149; font-weight:600; }
 </style>
 </head>
 <body>
@@ -124,6 +133,20 @@ PAGE = """<!doctype html>
     </div>
     <div id="nodeWarn" style="display:none;margin-top:8px;color:#f0b400;font-size:13px;"></div>
     <div id="egress" class="egress muted"></div>
+  </div>
+
+  <div class="card">
+    <h2>节点列表 <span id="nodeCount" class="muted"></span></h2>
+    <div class="row">
+      <button id="probeBtn" class="sm">测试全部节点延迟</button>
+      <span id="probeMsg" class="muted"></span>
+    </div>
+    <div class="nodescroll">
+      <table>
+        <thead><tr><th>国家</th><th>节点主机</th><th>端口</th><th>延迟</th></tr></thead>
+        <tbody id="nodeBody"><tr><td colspan="4" class="muted">加载中…</td></tr></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="card">
@@ -214,6 +237,41 @@ function updateNodeWarn(){
     $("nodeWarn").textContent = `⚠ ${nm} 仅 1 个节点，偶发超时无法自动切换，建议改用美国 / 英国 / 德国。`;
   } else { $("nodeWarn").style.display = "none"; }
 }
+function latClass(n){
+  if(n.ok === false || n.latency_ms == null) return "lat-fail";
+  if(n.latency_ms < 100) return "lat-fast";
+  if(n.latency_ms < 250) return "lat-mid";
+  return "lat-slow";
+}
+function latText(n){
+  if(n.ok === false || n.latency_ms == null) return "超时";
+  return n.latency_ms + " ms";
+}
+async function loadNodes(probe){
+  const btn = $("probeBtn"), body = $("nodeBody");
+  if(probe){ btn.disabled = true; btn.textContent = "探测中…";
+    $("probeMsg").textContent = "并发 TCP 探测中（16 线程，4s 超时）…"; }
+  try{
+    const r = await fetch("/api/nodes"+(probe?"?probe=1":""));
+    const d = await r.json();
+    if(d.error){ body.innerHTML = '<tr><td colspan="4" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
+    const rows = (d.nodes||[]).map(n =>
+      `<tr><td>${n.name}</td><td>${n.host}</td><td>${n.port}</td>`+
+      `<td class="${latClass(n)}">${probe?latText(n):"—"}</td></tr>`);
+    body.innerHTML = rows.join("") || '<tr><td colspan="4" class="muted">无节点</td></tr>';
+    $("nodeCount").textContent = "("+(d.nodes||[]).length+" 个)";
+    if(probe){
+      const ok = (d.nodes||[]).filter(n=>n.ok).length;
+      $("probeMsg").textContent = "可达 "+ok+"/"+(d.nodes||[]).length;
+    }
+  }catch(e){
+    body.innerHTML = '<tr><td colspan="4" class="muted">加载失败：'+e+'</td></tr>';
+  }finally{
+    if(probe){ btn.disabled = false; btn.textContent = "测试全部节点延迟"; }
+  }
+}
+$("probeBtn").onclick = () => loadNodes(true);
+
 let AUTHED = false, userPicked = false;
 async function loadState(){
   const r = await fetch("/api/state"); const s = await r.json();
@@ -344,7 +402,7 @@ $("testBtn").onclick = async () => {
   $("egress").textContent="测试中…";
   const r = await fetch("/api/egress"); const d = await r.json();
   $("egress").textContent = d.ip ? ("当前出口 IP："+d.ip) : ("测试失败："+(d.error||"")); };
-(async()=>{ await loadServers(); await loadState(); await loadAccounts();
+(async()=>{ await loadServers(); loadNodes(false); await loadState(); await loadAccounts();
   setInterval(loadAccounts, 15000); setInterval(loadState, 5000);
   setInterval(loadServers, 60000); })();
 </script>
@@ -486,6 +544,59 @@ class Panel:
         except Exception as e:
             return web.json_response({"countries": [], "error": str(e)})
 
+    async def api_nodes(self, req):
+        """Flatten the public server list into individual egress nodes.
+
+        No credentials needed — the Mozilla serverlist is public. With
+        ``?probe=1`` each node gets a TCP-connect latency measurement so the
+        panel can show which endpoints are actually reachable from this host.
+        """
+        from . import geo
+        want_probe = req.query.get("probe") in ("1", "true", "yes")
+
+        def _collect():
+            gc = GuardianClient("")
+            by_country = gc.nodes_by_country()
+            out = []
+            for code, meta in by_country.items():
+                zh, continent = geo.label(code, meta.get("name"))
+                for host, port in meta["nodes"]:
+                    out.append({
+                        "code": code,
+                        "name": zh,
+                        "continent": continent,
+                        "host": host,
+                        "port": int(port),
+                    })
+            # 按洲域 → 国家 → 主机排序，前端无需再排
+            order = {c: i for i, c in enumerate(geo.CONTINENT_ORDER)}
+            out.sort(key=lambda n: (order.get(n["continent"], 99), n["name"], n["host"]))
+            return out
+
+        try:
+            nodes = await asyncio.to_thread(_collect)
+        except Exception as e:
+            return web.json_response({"nodes": [], "error": str(e)})
+
+        if want_probe and nodes:
+            def _probe(node):
+                t0 = time.monotonic()
+                try:
+                    # TCP connect 探测：不发送任何协议数据，只看端口是否可达
+                    with socket.create_connection((node["host"], node["port"]), timeout=4):
+                        node["latency_ms"] = round((time.monotonic() - t0) * 1000)
+                        node["ok"] = True
+                except Exception:
+                    node["latency_ms"] = None
+                    node["ok"] = False
+                return node
+
+            # 16 并发：34 节点约 3 批，实测 ~5.7s 内完成
+            with ThreadPoolExecutor(max_workers=16) as ex:
+                nodes = list(ex.map(_probe, nodes))
+
+        return web.json_response({"nodes": nodes})
+
     async def api_start(self, req):
         try:
             body = await req.json()
@@ -500,7 +611,9 @@ class Panel:
                 return web.json_response({"ok": True, "switched": True})
             except Exception as e:
                 return web.json_response({"error": str(e)})
-        if self.pool is None:
+        if self.pool is None or not self.pool.tokens:
+            # 空池非 None（历史配置 refresh_tokens=[] 或异常路径）时 clients[0]
+            # 会裸抛 IndexError；这里一并挡掉。
             return web.json_response({"error": "无账号，先添加"})
         try:
             picker = NodePicker(self.pool.clients[0], country)
@@ -730,6 +843,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/account/remove", panel.api_account_remove),
         web.post("/api/strategy", panel.api_strategy),
         web.get("/api/servers", panel.api_servers),
+        web.get("/api/nodes", panel.api_nodes),
         web.post("/api/start", panel.api_start),
         web.post("/api/stop", panel.api_stop),
         web.post("/api/login", panel.api_login),

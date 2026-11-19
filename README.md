@@ -84,14 +84,31 @@ Mozilla 对 `/account/login` 和 `/account/create` 按机房 IP 风控（406）�
 `chrome-extension/` 里有一个 Manifest V3 插件，在你**已登录**的 Chrome 里一键取出 FxA 凭证，
 复制到剪贴板，粘到面板即可。全程不发外部请求——只读页面自己的 localStorage/cookie。
 
-安装（zip 包，方便迁移）：
+安装方式三选一：
 
-1. 下载仓库根目录的 `fxproxy-chrome-extension.zip`（或自己打包：`cd chrome-extension && zip -r ../fxproxy-chrome-extension.zip .`）
-2. 解压到任意目录（zip 内四个文件在根目录，解压出来就是扩展目录）
+**A. CRX（指纹浏览器 / 虚拟浏览器直接导入，推荐）**
+
+下载仓库根目录的 `fxproxy-chrome-extension.crx`，在 VirtualBrowser / 指纹浏览器的
+「插件管理 → 安装插件 → 本地 CRX 文件」里选中它即可。
+
+- 这是标准 CRX3（带 RSA-SHA256 有效签名），内部结构是**五个文件平铺在根目录**。
+- 如果你的浏览器导入时报错 `ENOENT: ... extensions\...\content.js`，说明你用的是
+  别人重新打过包的 CRX——内部多套了一层 `fxproxy-chrome-extension/` 目录，浏览器解压后
+  到根目录找不到 `content.js`。用本仓库这个 `.crx` 替换即可。
+- 自校验：`python tools/build_crx.py --verify fxproxy-chrome-extension.crx`
+- 改了插件源码后重新生成：`python tools/build_crx.py`（依赖 `pip install cryptography`）。
+
+**B. zip（普通 Chrome 迁移）**
+
+1. 下载 `fxproxy-chrome-extension.zip`（或自己打包：`cd chrome-extension && zip -r ../fxproxy-chrome-extension.zip .`）
+2. 解压到任意目录（五个文件在根目录，解压出来就是扩展目录）
 3. Chrome 打开 `chrome://extensions/`，开「开发者模式」
 4. 「加载已解压的扩展程序」→ 选解压出来的那个目录
 
-也可以直接用仓库里的 `chrome-extension/` 目录加载，效果一样。zip 只是方便拷到别的机器。
+**C. 直接用目录**：加载仓库里的 `chrome-extension/` 目录，效果一样。
+
+> 打包要点：`manifest.json`、`content.js`、`formats.js`、`popup.html`、`popup.js` 必须在包根，
+> 不能套在子文件夹里——否则指纹浏览器解压后找不到 `content.js`。
 
 用法：
 
@@ -246,6 +263,11 @@ fxproxy web        # 启动后自动打开 http://127.0.0.1:8765
 
 面板的出口国家下拉按**洲域分组**、显示中文国名与节点数（亚洲/欧洲/北美洲/南美洲/非洲/大洋洲），
 每 60 秒自动刷新一次；列表来自 Mozilla 公开的 `vpn-serverlist`，无需登录就能拉取，登录后立即重新加载。
+
+「② 运行状态」下方是**节点列表**卡片：页面加载即列出全部节点（国家中文 / 主机 / 端口，
+不探测），点「测试全部节点延迟」触发 `GET /api/nodes?probe=1`——16 线程并发 TCP connect、
+4s 超时，给每个节点附 `latency_ms` 与 `ok`，延迟按 <100ms 绿 / <250ms 黄 / ≥250ms 橙 /
+超时红四档着色（34 节点约 5.7s 完成）。无账号时也能列节点和测延迟。
 
 额度列显示「已用 X / 月度总额」：额度数字来自 Guardian 的 `X-Quota-Limit` / `X-Quota-Remaining`
 响应头，月度总额取自 status 的 `maxBytes`（每账号 50GiB）。只有 status 明确 `limited_bandwidth=false`
@@ -532,7 +554,7 @@ FXPROXY_POOL_STRATEGY=round-robin
 | `fxproxy/config.py`      | 配置读写 |
 | `fxproxy/cookieutil.py`  | 解析插件导出 JSON / Cookie 头 / 多个 token，统一提取凭证 |
 | `fxproxy/clashconf.py`   | 生成 Clash/Mihomo 订阅 YAML（指向本地 HTTP/SOCKS5 监听） |
-| `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口、cookie 导入 |
+| `fxproxy/webui.py`       | 本地可视化控制面板（aiohttp）：选国家/启停/配额/测出口、cookie 导入、节点列表与延迟探测（`/api/nodes`） |
 | `fxproxy/cli.py`         | 命令行入口（login / accounts / status / token / servers / run / web） |
 | `fxproxy/geo.py`         | 国家代码 → 中文名/洲域映射，节点下拉分组与 CLI servers 用 |
 | `Dockerfile` / `docker-compose.yml` | 容器部署：env 注入凭证，起代理 + 面板，公网订阅 |
@@ -540,3 +562,6 @@ FXPROXY_POOL_STRATEGY=round-robin
 | `deploy/oracle-free-bootstrap.sh` | Oracle Always Free 一键部署（venv + systemd + 防火墙 + 订阅） |
 | `chrome-extension/`      | Chrome MV3 插件：住宅 IP 登录账号页后一键提取 sessionToken，六种格式导出 |
 | `chrome-extension/formats.js` | 六种导出格式（JSON/lines/cookie/netscape/csv/accounts）的纯函数实现 |
+| `fxproxy-chrome-extension.crx` | 签名的 CRX3（文件平铺根目录），指纹浏览器直接导入 |
+| `fxproxy-chrome-extension.zip` | 同一插件的 zip 包，普通 Chrome「加载已解压扩展」用 |
+| `tools/build_crx.py`       | 从 `chrome-extension/` 生成/校验 CRX3，保证根目录平铺 |

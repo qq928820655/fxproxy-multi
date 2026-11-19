@@ -90,6 +90,8 @@ async def main():
             web.post("/api/login", panel.api_login),
             web.get("/api/config", panel.api_config),
             web.get("/api/servers", panel.api_servers),
+            web.get("/api/nodes", panel.api_nodes),
+            web.post("/api/start", panel.api_start),
             web.get("/clash.yaml", panel.api_clash),
         ])
         async with TestClient(TestServer(app)) as cli:
@@ -115,6 +117,44 @@ async def main():
             check("CN" in bycode and bycode["CN"]["name"] == "中国", "CN 映射中国")
             check("ZZ" in bycode and bycode["ZZ"]["continent"] == "其他", "未映射代码回退到其他")
             check("已用 / 月度" in (await (await cli.get("/")).text()), "面板表头改为已用/月度")
+
+            print("[api] nodes 列表")
+            r = await cli.get("/api/nodes")
+            nd = await r.json()
+            bycode_nodes = {n["code"]: n for n in nd["nodes"]}
+            check(len(nd["nodes"]) == 5, "nodes 返回全部 5 个节点(展开)")
+            check(bycode_nodes["US"]["name"] == "美国", "nodes 用中文国名")
+            check(bycode_nodes["US"]["host"] in ("a", "b") and
+                  bycode_nodes["US"]["port"] == 2499, "nodes 含 host/port")
+            check("latency_ms" not in nd["nodes"][0] and "ok" not in nd["nodes"][0],
+                  "无参 nodes 不探测、无延迟字段")
+
+            print("[api] nodes probe=1")
+            real_conn = webui_mod.socket.create_connection
+            calls = {"n": 0}
+            class _Sock:
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            def fake_conn(addr, timeout=None):
+                calls["n"] += 1
+                host = addr[0]
+                if host == "b": raise OSError("refused")
+                return _Sock()  # b 失败，其余立即成功
+            webui_mod.socket.create_connection = fake_conn
+            try:
+                r = await cli.get("/api/nodes?probe=1")
+                pr = await r.json()
+            finally:
+                webui_mod.socket.create_connection = real_conn
+            pnodes = {n["host"]: n for n in pr["nodes"]}
+            check(calls["n"] == 5, "probe 对每个节点各发一次 TCP connect")
+            check(pnodes["a"]["ok"] is True and isinstance(pnodes["a"]["latency_ms"], int),
+                  "probe 成功节点 ok=True + 整数延迟")
+            check(pnodes["b"]["ok"] is False and pnodes["b"]["latency_ms"] is None,
+                  "probe 失败节点 ok=False + 延迟 None")
+            html2 = await (await cli.get("/")).text()
+            check(all(k in html2 for k in ("probeBtn", "lat-fast", "lat-mid", "lat-slow", "lat-fail")),
+                  "面板含节点卡片与四档延迟配色")
 
             print("[api] strategy")
             r = await cli.post("/api/strategy", json={"strategy": "quota"})
@@ -255,6 +295,24 @@ async def main():
                   "空池首次导入: sessionToken 经 bootstrap 成功")
             check(panel.pool is not None and ("r" + T[1:]) in panel.pool.tokens,
                   "空池首次导入: bootstrap 出的 token 已入池")
+
+    print("[api] 空池 api_start 防御（回归）")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "emptypool.json"
+        cfgpath.write_text(json.dumps({
+            "refresh_tokens": [], "pool_strategy": "round-robin", "country": "US",
+        }), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        check(panel.pool is None, "refresh_tokens=[] → _make_pool 返回 None")
+        # 模拟异常路径下的"空池非 None"：clients 为空，tokens 也为空
+        panel.pool = guardian.TokenPool(["x"])
+        panel.pool.clients = []
+        app = web.Application()
+        app.add_routes([web.post("/api/start", panel.api_start)])
+        async with TestClient(TestServer(app)) as cli:
+            r = await cli.post("/api/start", json={"country": "US"})
+            d = await r.json()
+            check("无账号" in d.get("error", ""), "空池非 None 启动: 友好错误而非 IndexError")
 
     print(f"\nALL PASS ({PASS} checks)")
 
