@@ -1763,6 +1763,9 @@ class Panel:
                     failover=1,
                     force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
                 )
+                # 测速实例也接流量回调：按实际转发字节统计（含 TLS/请求头，
+                # 下载中途失败也照实计入），比只报 body 更准。
+                srv._on_traffic = self._add_traffic
                 await srv.start()
                 self._st_srv = srv
 
@@ -1783,8 +1786,6 @@ class Panel:
                     return {"bytes": got, "seconds": round(dt, 2),
                             "mbps": round(got * 8 / dt / 1e6, 1)}
                 res = await asyncio.to_thread(_bench)
-                # 测速经隧道下载的字节同样消耗账号额度，计入本地统计
-                self._add_traffic(0, int(res.get("bytes", 0)))
                 return web.json_response({"ok": True, **res})
             except Exception as e:
                 return web.json_response({"error": str(e)})

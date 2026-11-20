@@ -307,8 +307,9 @@ async def main():
             print("[api] 测速/出口探测计入本地流量")
             _saved_traffic = dict(panel._traffic)
             class _FakeSrv:
+                instances = []
                 def __init__(self, *a, **k):
-                    pass
+                    _FakeSrv.instances.append(self)
                 async def start(self):
                     pass
                 async def stop(self):
@@ -322,11 +323,16 @@ async def main():
             webui_mod.ProxyServer = _FakeSrv
             asyncio.to_thread = _fake_thread
             try:
-                before = panel._local_used()
                 r = await cli.post("/api/speedtest", json={"node": "a"})
                 ds = await r.json()
-                check(ds.get("ok") and panel._local_used() - before == 1234567,
-                      "测速下载量计入本地统计")
+                check(ds.get("ok"), "测速完成")
+                inst = _FakeSrv.instances[-1]
+                check(inst._on_traffic == panel._add_traffic,
+                      "测速实例挂上流量回调")
+                before = panel._local_used()
+                inst._on_traffic(0, 1234567)
+                check(panel._local_used() - before == 1234567,
+                      "测速流量回调计入本地统计")
             finally:
                 webui_mod.ProxyServer = _old_ps
                 asyncio.to_thread = _old_thread
