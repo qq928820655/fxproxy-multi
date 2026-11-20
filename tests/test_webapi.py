@@ -92,6 +92,7 @@ async def main():
             web.get("/api/state", panel.api_state),
             web.get("/api/accounts", panel.api_accounts),
             web.post("/api/accounts/refresh", panel.api_accounts_refresh),
+            web.post("/api/accounts/export", panel.api_accounts_export),
             web.post("/api/account/remove", panel.api_account_remove),
             web.post("/api/strategy", panel.api_strategy),
             web.post("/api/force-ipv4", panel.api_force_ipv4),
@@ -100,7 +101,9 @@ async def main():
             web.get("/api/config", panel.api_config),
             web.get("/api/servers", panel.api_servers),
             web.get("/api/nodes", panel.api_nodes),
+            web.post("/api/nodes/disable", panel.api_node_disable),
             web.post("/api/start", panel.api_start),
+            web.post("/api/speedtest", panel.api_speedtest),
             web.post("/api/ports", panel.api_ports),
             web.get("/clash.yaml", panel.api_clash),
         ])
@@ -201,6 +204,21 @@ async def main():
             r = await cli.post("/api/runtime-ua", json={"enabled": False})
             check((await r.json()).get("runtime_user_agent") == "", "可再次关闭")
 
+            print("[api] 节点禁用")
+            check(cfgmod.load(cfgpath).get("disabled_nodes") == [], "默认无禁用节点")
+            r = await cli.post("/api/nodes/disable",
+                               json={"host": "a", "disabled": True})
+            dd = await r.json()
+            check(dd.get("ok") and dd.get("disabled") is True, "禁用节点返回 ok")
+            check("a" in cfgmod.load(cfgpath).get("disabled_nodes", []), "禁用已落盘")
+            nodes = (await (await cli.get("/api/nodes")).json())["nodes"]
+            na = next(n for n in nodes if n["host"] == "a")
+            check(na.get("disabled") is True, "api_nodes 标记禁用节点")
+            r = await cli.post("/api/nodes/disable",
+                               json={"host": "a", "disabled": False})
+            check("a" not in cfgmod.load(cfgpath).get("disabled_nodes", []),
+                  "可再次启用节点")
+
             print("[api] login --append 语义")
             r = await cli.post("/api/login", json={"mode": "token", "refresh_token": "tokC"})
             d2 = await r.json()
@@ -243,6 +261,34 @@ async def main():
             check(c["refresh_tokens"] == ["tokB", "tokC"], "导出含全部 token")
             check(c["refresh_token"] == "tokB", "导出含兼容字段")
 
+            print("[api] 账号导出（多选）")
+            r = await cli.post("/api/accounts/export", json={"indices": [0]})
+            ex = await r.json()
+            check(ex.get("format") == "fxproxy-accounts"
+                  and ex["accounts"][0]["refresh_token"] == "tokB",
+                  "按索引导出单个账号")
+            r = await cli.post("/api/accounts/export", json={"indices": [0, 1]})
+            ex2 = await r.json()
+            check([a["refresh_token"] for a in ex2["accounts"]] == ["tokB", "tokC"],
+                  "多选导出顺序正确")
+            r = await cli.post("/api/accounts/export",
+                               json={"indices": [0, 1], "mode": "token"})
+            ex3 = await r.json()
+            check(ex3.get("format") == "fxproxy-refresh-tokens"
+                  and ex3["refresh_tokens"] == ["tokB", "tokC"],
+                  "token 模式导出 refresh_tokens")
+            r = await cli.post("/api/accounts/export",
+                               json={"indices": [0], "mode": "session"})
+            check(r.status == 400, "session 模式不可导出并报错")
+            # 导出格式应能被导入解析器读回（refresh_token 归入 refresh 桶）
+            from fxproxy import cookieutil
+            hexrt = "a" * 64
+            sample = json.dumps({"accounts": [
+                {"uid": 1, "email": "x@y.z", "refresh_token": hexrt}]})
+            parsed = cookieutil.parse(sample)
+            check(parsed["refresh_tokens"] == [hexrt] and parsed["session_tokens"] == [],
+                  "导出 JSON 可被导入解析为 refresh_token")
+
             print("[api] cookie 模式导入")
             T1 = "a" * 64
             R2 = "e" * 63 + "0"   # 合法 refresh_token（非全同字符，桩才认）
@@ -263,6 +309,61 @@ async def main():
             d8 = await r.json()
             check(d8.get("ok") and d8["added"] == 1, "cookie 模式: Cookie 头格式导入")
             check(R2 in panel.pool.tokens, "cookie 模式: refresh token 直接入池")
+
+            print("[api] 测速/出口探测计入本地流量")
+            _saved_traffic = dict(panel._traffic)
+            class _FakeSrv:
+                def __init__(self, *a, **k):
+                    pass
+                async def start(self):
+                    pass
+                async def stop(self):
+                    pass
+            _old_ps = webui_mod.ProxyServer
+            _old_thread = asyncio.to_thread
+
+            async def _fake_thread(fn, *a, **k):
+                return {"bytes": 1234567, "seconds": 1.0, "mbps": 9.9}
+
+            webui_mod.ProxyServer = _FakeSrv
+            asyncio.to_thread = _fake_thread
+            try:
+                before = panel._local_used()
+                r = await cli.post("/api/speedtest", json={"node": "a"})
+                ds = await r.json()
+                check(ds.get("ok") and panel._local_used() - before == 1234567,
+                      "测速下载量计入本地统计")
+            finally:
+                webui_mod.ProxyServer = _old_ps
+                asyncio.to_thread = _old_thread
+
+            class _R:
+                async def read(self, n):
+                    return b"HTTP/1.1 200 OK\r\n\r\n1.2.3.4"
+
+            class _W:
+                def write(self, b):
+                    pass
+                async def drain(self):
+                    pass
+                def close(self):
+                    pass
+
+            async def _fake_open(host, port, th, tp):
+                return _R(), _W(), b""
+
+            _old_open = panel._vless_open_tunnel
+            panel._vless_open_tunnel = _fake_open
+            try:
+                before = panel._local_used()
+                host, ip = await panel._probe_egress("h", 1, asyncio.Semaphore(1))
+                check(ip == "1.2.3.4", "出口探测解析出 IP")
+                check(panel._local_used() > before, "出口探测流量计入本地统计")
+            finally:
+                panel._vless_open_tunnel = _old_open
+            # 还原流量计数，避免污染后续订阅头断言
+            panel._traffic.clear()
+            panel._traffic.update(_saved_traffic)
 
             print("[api] 面板 HTML")
             r = await cli.get("/")

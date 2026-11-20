@@ -125,6 +125,22 @@ PAGE = r"""<!doctype html>
   button.danger { background:#3d1b1b; border-color:#8b3a3a; color:#ff9b9b; }
   button.sm { padding:5px 10px; font-size:12px; }
   button:disabled { opacity:.5; cursor:not-allowed; }
+  .dropdown { position:relative; display:inline-block; }
+  .dropdown .menu { display:none; position:absolute; right:0; top:calc(100% + 4px);
+          min-width:180px; background:#161b22; border:1px solid #30363d; border-radius:6px;
+          box-shadow:0 8px 24px rgba(0,0,0,.5); z-index:20; overflow:hidden; }
+  .dropdown.open .menu { display:block; }
+  .dropdown .menu button { display:block; width:100%; text-align:left; border:0;
+          border-radius:0; background:transparent; padding:8px 12px; font-size:13px; }
+  .dropdown .menu button:hover:not(:disabled) { background:#21262d; }
+  .dropdown .menu button:disabled { opacity:.45; cursor:not-allowed; }
+  .dropdown .menu .hint { color:#8b949e; font-size:11px; padding:0 12px 6px; }
+  .dropdown .menu .sep { height:1px; background:#30363d; margin:4px 0; }
+  #flash { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+          background:#238636; color:#fff; padding:8px 16px; border-radius:6px;
+          font-size:13px; box-shadow:0 6px 20px rgba(0,0,0,.5); z-index:100;
+          opacity:0; pointer-events:none; transition:opacity .2s; }
+  #flash.show { opacity:1; }
   .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px;
           font-weight:600; white-space:nowrap; }
   .on { background:#238636; color:#fff; }
@@ -170,6 +186,7 @@ PAGE = r"""<!doctype html>
   .tab.on { color:#58a6ff; background:#0d1117; border-color:#21262d; position:relative; top:1px; font-weight:600; }
   /* 面板块隐藏用 !important：#loginCard 自身还有内联 display，不能让它压过 tab 切换 */
   [data-pane][hidden] { display:none !important; }
+  .proxyaddr .pa { display:inline-block; margin-right:16px; }
   @media (max-width:600px) {
     .tab { padding:8px 12px; font-size:13px; }
     /* 手机上 6 列的账号表会把页面撑出屏幕（整页左右滚），改成一行一张卡 */
@@ -212,10 +229,13 @@ PAGE = r"""<!doctype html>
     table.nodes td.nhost .muted { margin:0 0 0 6px; font-size:11px; }
     table.nodes td.nact { display:flex; gap:8px; padding-top:8px; }
     table.nodes td.nact button { flex:1 1 0; }
+    /* 移动端把 HTTP / SOCKS5 分成两行显示 */
+    .proxyaddr .pa { display:block; margin-right:0; line-height:1.8; }
   }
 </style>
 </head>
 <body>
+<div id="flash"></div>
 <div class="wrap">
   <h1>fxproxy 控制面板</h1>
   <div class="sub">Firefox IP Protection · 多账号池 · 每账号每月 50GB 落地代理</div>
@@ -271,8 +291,10 @@ PAGE = r"""<!doctype html>
     </div>
     <div style="border-top:1px solid #21262d;margin-top:14px;padding-top:12px;">
       <div class="muted">在浏览器 / 系统里把代理设为：</div>
-      <div style="margin-top:6px;">HTTP：<code id="httpAddr">127.0.0.1:8080</code>　
-          SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></div>
+      <div class="proxyaddr" style="margin-top:6px;">
+        <span class="pa">HTTP：<code id="httpAddr">127.0.0.1:8080</code></span>
+        <span class="pa">SOCKS5：<code id="socksAddr">127.0.0.1:1080</code></span>
+      </div>
       <div class="muted" style="font-size:12px;margin-top:4px;">
         两个是同一后端的两个入口，任选其一：浏览器 / 系统代理 / 指纹浏览器填
         <b>HTTP <span id="httpPortTxt">8080</span></b>；
@@ -342,6 +364,21 @@ PAGE = r"""<!doctype html>
       </select>
       <button id="strategyBtn" class="sm">应用策略</button>
       <button id="refreshQuotaBtn" class="sm">刷新配额</button>
+      <button id="selAllBtn" class="sm">全选</button>
+      <div class="dropdown" id="exportDd">
+        <button id="exportBtn" class="sm" disabled>导出选中 ▾</button>
+        <div class="menu" id="exportMenu">
+          <button data-mode="token" data-action="file">refresh_token</button>
+          <button data-mode="cookie" data-action="file">Cookie / 插件导出</button>
+          <button data-mode="password" data-action="file" disabled title="登录后仅保存 refresh_token，未保存密码">邮箱 + 密码（不可用）</button>
+          <button data-mode="session" data-action="file" disabled title="登录后仅保存 refresh_token，未保存 sessionToken">sessionToken（不可用）</button>
+          <div class="sep"></div>
+          <button data-mode="token" data-action="copy">复制 refresh_token</button>
+          <button data-mode="cookie" data-action="copy">复制 Cookie / 插件导出</button>
+          <button data-mode="password" data-action="copy" disabled title="登录后仅保存 refresh_token，未保存密码">复制 邮箱 + 密码（不可用）</button>
+          <button data-mode="session" data-action="copy" disabled title="登录后仅保存 refresh_token，未保存 sessionToken">复制 sessionToken（不可用）</button>
+        </div>
+      </div>
       <button id="addToggle" class="primary sm">+ 添加账号</button>
     </div>
     <div class="row" style="margin-bottom:12px;">
@@ -357,8 +394,8 @@ PAGE = r"""<!doctype html>
       <span class="muted" style="font-size:12px;">仅控制面请求（刷新 token/取 pass/节点列表）换成 Firefox UA，降低 python-requests 指纹；不影响代理流量</span>
     </div>
     <table class="acct">
-      <thead><tr><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
-      <tbody id="acctBody"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+      <thead><tr><th><input type="checkbox" id="selAll" title="全选"></th><th>#</th><th>邮箱</th><th>uid</th><th>状态</th><th>已用 / 月度</th><th></th></tr></thead>
+      <tbody id="acctBody"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
     </table>
     <div class="kv" style="margin-top:10px;"><span>总剩余</span><b id="totalRemain">—</b></div>
   </div>
@@ -538,11 +575,15 @@ function renderNodeRows(){
     arr.sort((a,b)=>{
       const ua=_sortUnknown(a,SORT.key), ub=_sortUnknown(b,SORT.key);
       if(ua!==ub) return ua?1:-1;
+      // 禁用节点始终排在启用节点之后
+      if(!!a.disabled !== !!b.disabled) return a.disabled?1:-1;
       const va=_sortVal(a,SORT.key), vb=_sortVal(b,SORT.key);
       let c = (typeof va==="string") ? va.localeCompare(vb,"zh-Hans")
                                      : (va<vb?-1:va>vb?1:0);
       return c*SORT.dir;
     });
+  } else {
+    arr.sort((a,b)=> (a.disabled?1:0)-(b.disabled?1:0));
   }
   const probe = NODE_PROBE;
   const rows = arr.map(n => {
@@ -555,11 +596,16 @@ function renderNodeRows(){
         : `<td data-l="带宽"><span class="pill off" id="bw-${n.host}">${mb} Mbps</span></td>`;
     }
     const cur = (n.host === CURRENT_NODE);
+    const off = !!n.disabled;
     const ipLine = n.egress_ip ? `<div class="muted" style="font-size:11px;">出口 ${n.egress_ip}</div>` : '';
-    return `<tr${cur?' style="background:#123329;"':''}><td class="nname">${n.name}${cur?' <span class="pill on">当前</span>':''}</td>`+
+    const offPill = off ? ' <span class="pill off">已禁用</span>' : '';
+    const rowStyle = off ? ' style="opacity:.45;"'
+                         : (cur ? ' style="background:#123329;"' : '');
+    return `<tr${rowStyle}><td class="nname">${n.name}${cur?' <span class="pill on">当前</span>':''}${offPill}</td>`+
       `<td class="nhost">${n.host}${ipLine}</td><td data-l="端口">${n.port}</td>${lat}${bw}`+
-      `<td class="nact"><button class="sm primary" onclick="useNode('${n.host}')">设为出口</button> `+
-      `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button></td></tr>`;
+      `<td class="nact"><button class="sm primary" ${off?'disabled':''} onclick="useNode('${n.host}')">设为出口</button> `+
+      `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button> `+
+      `<button class="sm" onclick="toggleNode('${n.host}', ${off?'false':'true'})">${off?'启用':'禁用'}</button></td></tr>`;
   });
   body.innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无节点</td></tr>';
   document.querySelectorAll("th.sortable").forEach(th=>{
@@ -573,6 +619,22 @@ function sortNodes(key){
   if(SORT.key===key) SORT.dir = -SORT.dir;
   else { SORT.key = key; SORT.dir = 1; }
   renderNodeRows();
+}
+function updateNodeCount(){
+  const off = NODE_DATA.filter(n=>n.disabled).length;
+  $("nodeCount").textContent = "("+NODE_DATA.length+" 个"+(off?("，禁用 "+off):"")+")";
+}
+async function toggleNode(host, disabled){
+  $("probeMsg").textContent = (disabled?"禁用 ":"启用 ")+host+" …";
+  const r = await fetch("/api/nodes/disable",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({host:host, disabled:disabled})});
+  const d = await r.json();
+  if(d.error){ $("probeMsg").textContent = "失败："+d.error; return; }
+  const n = NODE_DATA.find(x=>x.host===host);
+  if(n) n.disabled = disabled;
+  renderNodeRows(); updateNodeCount();
+  $("probeMsg").textContent = (disabled?"已禁用 ":"已启用 ")+host+"（订阅同步生效）";
 }
 async function loadNodes(probe, egress){
   const btn = $("probeBtn"), ebtn = $("egressBtn"), body = $("nodeBody");
@@ -588,7 +650,7 @@ async function loadNodes(probe, egress){
     if(d.error){ body.innerHTML = '<tr><td colspan="6" class="muted">加载失败：'+d.error+'</td></tr>'; return; }
     NODE_DATA = d.nodes||[]; NODE_PROBE = !!probe;
     renderNodeRows();
-    $("nodeCount").textContent = "("+NODE_DATA.length+" 个)";
+    updateNodeCount();
     if(probe){
       const ok = NODE_DATA.filter(n=>n.ok).length;
       $("probeMsg").textContent = "可达 "+ok+"/"+NODE_DATA.length;
@@ -722,6 +784,77 @@ function renderQuota(d){
   bar.style.background = pct >= 90 ? "#da3633" : (pct >= 70 ? "#d29922" : "#2ea043");
   $("qSub").textContent = sub;
 }
+let SELECTED = new Set();
+let ACCT_TOTAL = 0;
+function onSel(i, on){ if(on) SELECTED.add(i); else SELECTED.delete(i); updateSelUI(); }
+function updateSelUI(){
+  const n = SELECTED.size;
+  const b = $("exportBtn");
+  if(b){ b.disabled = n===0; b.textContent = n? ("导出选中 ("+n+") ▾") : "导出选中 ▾"; }
+  const all = $("selAll");
+  if(all){ all.checked = n>0 && n===ACCT_TOTAL; all.indeterminate = n>0 && n<ACCT_TOTAL; }
+}
+function selectAll(on){
+  SELECTED = on ? new Set(Array.from({length:ACCT_TOTAL},(_,i)=>i)) : new Set();
+  document.querySelectorAll(".acctChk").forEach(cb=>{ cb.checked = SELECTED.has(+cb.dataset.i); });
+  updateSelUI();
+}
+$("selAll").onchange = () => selectAll($("selAll").checked);
+$("selAllBtn").onclick = () => selectAll(SELECTED.size !== ACCT_TOTAL);
+$("exportBtn").onclick = (e) => {
+  e.stopPropagation();
+  if($("exportBtn").disabled) return;
+  $("exportDd").classList.toggle("open");
+};
+document.addEventListener("click", (e) => {
+  if(!e.target.closest("#exportDd")) $("exportDd").classList.remove("open");
+});
+function flash(msg){
+  const el = $("flash");
+  el.textContent = msg; el.classList.add("show");
+  clearTimeout(flash._t);
+  flash._t = setTimeout(()=>el.classList.remove("show"), 1800);
+}
+async function copyText(text){
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(text); return true;
+    }
+  }catch(e){}
+  try{
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand("copy"); ta.remove(); return ok;
+  }catch(e){ return false; }
+}
+$("exportMenu").querySelectorAll("button").forEach(btn => {
+  btn.onclick = () => {
+    if(btn.disabled) return;
+    $("exportDd").classList.remove("open");
+    doExport(btn.dataset.mode, btn.dataset.action || "file");
+  };
+});
+async function doExport(mode, action){
+  const idx = Array.from(SELECTED).sort((a,b)=>a-b);
+  if(!idx.length){ alert("请先勾选账号"); return; }
+  const r = await fetch("/api/accounts/export",{method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({indices:idx, mode:mode})});
+  const d = await r.json();
+  if(d.error){ alert("导出失败："+d.error); return; }
+  const text = JSON.stringify(d, null, 2);
+  if(action === "copy"){
+    const ok = await copyText(text);
+    flash(ok ? ("已复制 "+idx.length+" 个账号") : "复制失败，请改用下载");
+    return;
+  }
+  const blob = new Blob([text],{type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "fxproxy-"+mode+"-"+new Date().toISOString().slice(0,10)+".json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
 async function loadAccounts(){
   try{
     const r = await timeoutFetch("/api/accounts", null, 25000); const d = await r.json();
@@ -743,12 +876,19 @@ async function loadAccounts(){
         rem = "月度 "+fmt(a.max_bytes)+" · 用量待取";
       } else { rem = (a.error||"—").slice(0,32); }
       // data-l 给窄屏用：表头隐藏后靠它显示字段名
-      return `<tr><td class="mail" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
+      return `<tr><td class="sel" data-l="选择"><input type="checkbox" class="acctChk" data-i="${i}" ${SELECTED.has(i)?'checked':''}></td>`+
+        `<td class="mail" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
         <td data-l="uid">${a.uid||"—"}</td><td data-l="状态">${st}</td>
         <td class="quota" data-l="已用 / 月度">${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
         <td data-l="操作"><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
     });
-    $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">无账号</td></tr>';
+    $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="7" class="muted">无账号</td></tr>';
+    ACCT_TOTAL = (d.accounts||[]).length;
+    SELECTED.forEach(i=>{ if(i>=ACCT_TOTAL) SELECTED.delete(i); });
+    document.querySelectorAll(".acctChk").forEach(cb=>{
+      cb.onchange = () => onSel(+cb.dataset.i, cb.checked);
+    });
+    updateSelUI();
     const remTxt = d.total_remaining_bytes!=null ? "剩 "+fmt(d.total_remaining_bytes) : null;
     // 已用：优先用后端对齐后的 display_used_bytes（Firefox 基线 + 其后本地新增）
     const localUsed = d.local_used_bytes||0;
@@ -761,7 +901,7 @@ async function loadAccounts(){
          : (remTxt || (d.total_max_bytes!=null ? "月度 "+fmt(d.total_max_bytes)+" · 用量待取" : "部分未知")));
     renderQuota(d);
   }catch(e){
-    $("acctBody").innerHTML = '<tr><td colspan="6" class="muted">加载失败</td></tr>';
+    $("acctBody").innerHTML = '<tr><td colspan="7" class="muted">加载失败</td></tr>';
     renderQuota(null);
   }
 }
@@ -1120,6 +1260,46 @@ class Panel:
             self.cfg["pool_strategy"] = self.pool.strategy
         return cfgmod.save(self.cfg, self.config_path)
 
+    def _disabled_nodes(self) -> set:
+        return {str(h) for h in (self.cfg.get("disabled_nodes") or []) if h}
+
+    def _node_enabled(self, host) -> bool:
+        return str(host) not in self._disabled_nodes()
+
+    async def api_node_disable(self, req):
+        """Enable/disable one node. Disabled nodes are dropped from the
+        subscription, slug routing and the local proxy's node pool."""
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        host = (body.get("host") or "").strip()
+        if not host:
+            return web.json_response({"error": "缺少 host"}, status=400)
+        disabled = bool(body.get("disabled"))
+        cur = [str(h) for h in (self.cfg.get("disabled_nodes") or [])]
+        if disabled:
+            if host not in cur:
+                cur.append(host)
+        else:
+            cur = [h for h in cur if h != host]
+        self.cfg["disabled_nodes"] = cur
+        try:
+            cfgmod.save(self.cfg, self.config_path)
+        except Exception as e:
+            return web.json_response({"error": str(e)})
+        # 热应用：运行中的本地代理立即按新的禁用集合选节点
+        newset = set(cur)
+        for s in (self.srv, self._st_srv):
+            if s is not None:
+                try:
+                    s.picker.exclude = newset
+                except Exception:
+                    pass
+        return web.json_response({"ok": True, "host": host,
+                                  "disabled": disabled,
+                                  "disabled_count": len(cur)})
+
     # ---- handlers ----
     async def index(self, req):
         return web.Response(text=PAGE, content_type="text/html")
@@ -1315,6 +1495,68 @@ class Panel:
         await asyncio.to_thread(self.pool.refresh_quotas)
         return web.json_response({"ok": True})
 
+    async def api_accounts_export(self, req):
+        """Export selected accounts (by index) in one of the import formats.
+
+        ``mode`` mirrors the 添加账号 dropdown:
+          token    -> {"refresh_tokens": [...]}          (直接粘贴 refresh_token)
+          cookie   -> {"accounts": [{uid,email,refresh_token}]}  (Cookie 导入可读回)
+        password/session 登录后不保留原始密码/sessionToken，无法导出。"""
+        if self.pool is None or not self.pool.clients:
+            return web.json_response({"error": "无账号"}, status=400)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        mode = body.get("mode") or "cookie"
+        if mode in ("password", "session"):
+            return web.json_response({
+                "error": "登录后仅保留 refresh_token，未保存密码/sessionToken，"
+                         "请改用 refresh_token 或 Cookie 导出"}, status=400)
+        n = len(self.pool.clients)
+        raw = body.get("indices")
+        if raw is None:
+            sel = list(range(n))
+        else:
+            sel = []
+            for x in raw:
+                try:
+                    i = int(x)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i < n and i not in sel:
+                    sel.append(i)
+            sel.sort()
+        if not sel:
+            return web.json_response({"error": "未选择账号"}, status=400)
+        accounts = []
+        for i in sel:
+            c = self.pool.clients[i]
+            email = getattr(c, "_email", None)
+            if email is None:
+                try:
+                    email = await asyncio.to_thread(c.email)
+                except Exception:
+                    email = None
+            accounts.append({
+                "uid": getattr(c, "_uid", None),
+                "email": email,
+                "refresh_token": c.refresh_token,
+            })
+        if mode == "token":
+            return web.json_response({
+                "format": "fxproxy-refresh-tokens",
+                "version": 1,
+                "exported_at": int(time.time()),
+                "refresh_tokens": [a["refresh_token"] for a in accounts],
+            })
+        return web.json_response({
+            "format": "fxproxy-accounts",
+            "version": 1,
+            "exported_at": int(time.time()),
+            "accounts": accounts,
+        })
+
     async def api_account_remove(self, req):
         try:
             body = await req.json()
@@ -1472,6 +1714,7 @@ class Panel:
                     Panel._egress_cache[host] = ip
         for n in nodes:
             n["egress_ip"] = Panel._egress_cache.get(n["host"])
+            n["disabled"] = not self._node_enabled(n["host"])
 
         return web.json_response({"nodes": nodes})
 
@@ -1505,7 +1748,8 @@ class Panel:
             # 会裸抛 IndexError；这里一并挡掉。
             return web.json_response({"error": "无账号，先添加"})
         try:
-            picker = NodePicker(self.pool.clients[0], country, node)
+            picker = NodePicker(self.pool.clients[0], country, node,
+                                  exclude=self._disabled_nodes())
             srv = ProxyServer(
                 self.pool, picker,
                 host=self.cfg.get("host", "127.0.0.1"),
@@ -1514,6 +1758,7 @@ class Panel:
                 failover=self.cfg.get("failover", 3),
                 force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
             )
+            srv._on_traffic = self._add_traffic
             await srv.start()
             self.srv = srv
             return web.json_response({"ok": True, "account_count": len(self.pool.clients),
@@ -1536,7 +1781,8 @@ class Panel:
                 return web.json_response({"error": "已有测速在进行"})
             srv = None
             try:
-                picker = NodePicker(self.pool.clients[0], None, node)
+                picker = NodePicker(self.pool.clients[0], None, node,
+                                      exclude=self._disabled_nodes())
                 st_port, _st_socks = _pick_free_ports()
                 srv = ProxyServer(
                     self.pool, picker,
@@ -1564,6 +1810,8 @@ class Panel:
                     return {"bytes": got, "seconds": round(dt, 2),
                             "mbps": round(got * 8 / dt / 1e6, 1)}
                 res = await asyncio.to_thread(_bench)
+                # 测速经隧道下载的字节同样消耗账号额度，计入本地统计
+                self._add_traffic(0, int(res.get("bytes", 0)))
                 return web.json_response({"ok": True, **res})
             except Exception as e:
                 return web.json_response({"error": str(e)})
@@ -1655,13 +1903,15 @@ class Panel:
             return web.json_response({**base, "stopped": True,
                                       "note": "端口已保存；没有账号，代理保持停止"})
         try:
-            picker = NodePicker(self.pool.clients[0], country, node)
+            picker = NodePicker(self.pool.clients[0], country, node,
+                                  exclude=self._disabled_nodes())
             srv = ProxyServer(
                 self.pool, picker,
                 host=host, http_port=http_port, socks_port=socks_port,
                 failover=self.cfg.get("failover", 3),
                 force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
             )
+            srv._on_traffic = self._add_traffic
             await srv.start()
             self.srv = srv
         except Exception as e:
@@ -1990,10 +2240,13 @@ class Panel:
                     self._vless_open_tunnel(host, port, "api.ipify.org", 80),
                     timeout=30,
                 )
-                writer.write(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\n"
-                             b"Connection: close\r\n\r\n")
+                req = (b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\n"
+                       b"Connection: close\r\n\r\n")
+                writer.write(req)
                 await writer.drain()
                 data = await asyncio.wait_for(reader.read(4096), timeout=10)
+                # 出口探测也走隧道，收发字节计入本地统计（每节点约几十字节）
+                self._add_traffic(len(req), len(data))
                 writer.close()
                 body = (data.split(b"\r\n\r\n", 1)[1]
                         if b"\r\n\r\n" in data else b"").decode(errors="replace").strip()
@@ -2097,10 +2350,10 @@ class Panel:
         if not uuid_hex:
             raise web.HTTPNotFound()
         slug = req.match_info.get("slug", "").strip().lower()
-        nodes = await self._public_nodes()
+        nodes = [n for n in await self._public_nodes() if self._node_enabled(n[2])]
         node = next((n for n in nodes if n[2] == slug), None)
         if node is None:
-            # unknown slug: only Fastly list members are allowed as egress
+            # unknown or disabled slug: only enabled Fastly nodes are allowed
             raise web.HTTPNotFound()
         node_host, node_port = node[2], node[3]
 
@@ -2397,7 +2650,7 @@ class Panel:
         if not self._bridge_available(server):
             return web.json_response({"error": "vless bridge not deployed"})
         uuid = self._bridge_uuid()
-        nodes = await self._public_nodes()
+        nodes = [n for n in await self._public_nodes() if self._node_enabled(n[2])]
         lines = []
         if nodes:
             for code, name, host, port in nodes:
@@ -2443,7 +2696,8 @@ class Panel:
             socks_port=self.cfg.get("sub_socks_port") or self.cfg.get("socks_port", 1080),
         )
         if self._bridge_available(server):
-            nodes = await self._public_nodes()
+            nodes = [n for n in await self._public_nodes()
+                     if self._node_enabled(n[2])]
             per_node = []
             if nodes:
                 for code, name, nh, nport in nodes:
@@ -2686,12 +2940,14 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.get("/api/state", panel.api_state),
         web.get("/api/accounts", panel.api_accounts),
         web.post("/api/accounts/refresh", panel.api_accounts_refresh),
+        web.post("/api/accounts/export", panel.api_accounts_export),
         web.post("/api/account/remove", panel.api_account_remove),
         web.post("/api/strategy", panel.api_strategy),
         web.post("/api/force-ipv4", panel.api_force_ipv4),
         web.post("/api/runtime-ua", panel.api_runtime_ua),
         web.get("/api/servers", panel.api_servers),
         web.get("/api/nodes", panel.api_nodes),
+        web.post("/api/nodes/disable", panel.api_node_disable),
         web.post("/api/speedtest", panel.api_speedtest),
         web.get("/ws-echo", panel.ws_echo),
         web.get("/vless", panel.ws_bridge),

@@ -305,6 +305,117 @@ def test_runtime_user_agent():
           "关闭后恢复 requests 默认 UA")
 
 
+def test_fpn_401_selfheal_and_ua():
+    print("[fpn] 401 自愈 + 浏览器 UA 不发给 fpn")
+    from fxproxy.guardian import GuardianClient, FIREFOX_UA
+
+    class Resp:
+        def __init__(self, code, body=None):
+            self.status_code = code
+            self._body = body or {}
+            self.text = str(self._body)
+            self.headers = {}
+        def json(self):
+            return self._body
+
+    class Sess:
+        def __init__(self):
+            self.headers = {"User-Agent": FIREFOX_UA}
+            self.gets = []
+            self._n = 0
+            self.posts = 0
+        def post(self, url, json=None, timeout=None):
+            self.posts += 1
+            return Resp(200, {"access_token": "at%d" % self.posts, "expires_in": 3600})
+        def get(self, url, headers=None, timeout=None):
+            self.gets.append(dict(headers or {}))
+            self._n += 1
+            if self._n == 1:
+                return Resp(401, {"error": "Unauthorized"})
+            return Resp(200, {"uid": 42, "maxBytes": "0"})
+
+    s = Sess()
+    gc = GuardianClient("rt", session=s)
+    st = gc.status()
+    check(st.get("uid") == 42, "401 后换新 token 重试成功")
+    check(len(s.gets) == 2 and s.posts >= 2, "发生一次重试与重新取 token")
+    check(all(g.get("User-Agent") == "fxproxy/1.0" for g in s.gets),
+          "fpn 请求改用非浏览器 UA（否则 406）")
+    check(s.gets[0].get("Authorization") != s.gets[1].get("Authorization"),
+          "重试携带刷新后的 bearer")
+
+
+def test_proxy_splice_traffic():
+    print("[traffic] 8080/1080 代理流量回调计数")
+    import asyncio
+    from fxproxy.proxyserver import ProxyServer, NodePicker
+
+    class _C:
+        def nodes_by_country(self):
+            return {"US": {"name": "US", "nodes": [("a", 1)]}}
+
+    srv = ProxyServer(GuardianClient("t"), NodePicker(_C()))
+    got = []
+    srv._on_traffic = lambda up, down: got.append((up, down))
+
+    class _Block:
+        def __init__(self, first):
+            self.first = first
+            self.done = False
+        async def read(self, n):
+            if not self.done:
+                self.done = True
+                return self.first
+            await asyncio.Event().wait()  # 永不返回，靠 sibling 结束被 cancel
+
+    class _EOF:
+        def __init__(self, first):
+            self.first = first
+            self.done = False
+        async def read(self, n):
+            if not self.done:
+                self.done = True
+                return self.first
+            return b""
+
+    class _W:
+        def write(self, b):
+            pass
+        async def drain(self):
+            pass
+        def close(self):
+            pass
+
+    async def run():
+        await srv._splice(_Block(b"a" * 100), _W(), _EOF(b"b" * 300), _W(),
+                          leftover=b"x" * 10)
+
+    asyncio.run(run())
+    check(got == [(110, 300)], "up=leftover+客户端字节, down=服务端字节")
+
+
+def test_node_picker_exclude():
+    print("[nodes] 禁用节点从选择池排除")
+    from fxproxy.proxyserver import NodePicker
+
+    class _C:
+        def nodes_by_country(self):
+            return {"US": {"name": "US", "nodes": [("a", 1), ("b", 2)]}}
+
+    p = NodePicker(_C(), exclude={"a"})
+    pool = p._pool()
+    check([h for h, _ in pool] == ["b"], "禁用节点被排除，只剩 b")
+    p2 = NodePicker(_C(), exclude={"a", "b"})
+    try:
+        p2._pool()
+        check(False, "全部禁用应报错")
+    except RuntimeError:
+        check(True, "全部禁用时报错")
+    # 显式 pin 的节点优先于禁用（用户手动指定）
+    p3 = NodePicker(_C(), node="a", exclude={"a"})
+    check(p3._pool() == [("a", 1)], "显式 pin 覆盖禁用")
+
+
 if __name__ == "__main__":
     test_config_migration()
     test_env_deployment_overrides()
@@ -312,6 +423,9 @@ if __name__ == "__main__":
     test_port_helpers()
     test_force_ipv4_egress()
     test_runtime_user_agent()
+    test_fpn_401_selfheal_and_ua()
+    test_proxy_splice_traffic()
+    test_node_picker_exclude()
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()
