@@ -765,6 +765,9 @@ async def main():
             web.post("/api/panel/password", panel.api_panel_password),
             web.get("/api/accounts", panel.api_accounts),
             web.get("/api/version", panel.api_version),
+            web.get("/api/state", panel.api_state),
+            web.get("/api/servers", panel.api_servers),
+            web.get("/api/nodes", panel.api_nodes),
         ])
         async with TestClient(TestServer(app)) as cli:
             r = await cli.get("/")
@@ -775,6 +778,9 @@ async def main():
             check(r.status == 401, "未登录访问 API 返回 401")
             r = await cli.get("/api/version")
             check(r.status == 200, "版本接口公开（一键更新健康检查用）")
+            for path in ("/api/state", "/api/servers", "/api/nodes"):
+                r = await cli.get(path)
+                check(r.status == 200, f"只读节点/状态接口免密：{path}")
             r = await cli.post("/api/panel/login", json={"password": "wrong"})
             check(r.status == 401, "错误密码被拒")
             r = await cli.post("/api/panel/login", json={"password": "admin"})

@@ -1238,9 +1238,12 @@ _PANEL_SESSION_TTL = 7 * 24 * 3600
 _PANEL_PBKDF2_ROUNDS = 200_000
 
 # 面板鉴权放行的路径：登录/鉴权状态、版本（一键更新的健康检查在重启后
-# 无 cookie 时也要能读）、订阅与代理数据面（客户端不会带面板 cookie）。
+# 无 cookie 时也要能读）、订阅与代理数据面（客户端不会带面板 cookie）、
+# 以及只读的节点/国家/状态查询（外部集成与监控无需登录，Mozilla 服务器
+# 列表本身是公开数据）。账号、配置、启停、测速、更新等管理操作仍需登录。
 _PANEL_PUBLIC_PATHS = frozenset({
     "/api/panel/login", "/api/panel/auth", "/api/version",
+    "/api/state", "/api/servers", "/api/nodes",
     "/clash.yaml", "/sub", "/ws-echo", "/favicon.ico",
 })
 _PANEL_PUBLIC_PREFIXES = ("/vless",)
