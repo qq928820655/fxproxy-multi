@@ -84,6 +84,28 @@ def _from_cookie_text(text: str, sessions: list, refresh: list, detected: list):
             (refresh if "refresh" in name.lower() else sessions).append(_norm(value))
 
 
+def _collect_str_list(v, dest, detected, label):
+    """Collect the string members of a ``*_tokens`` value into one bucket.
+
+    Used for plural keys (``refresh_tokens`` / ``session_tokens``) so their
+    elements are classified by the key they sit under. Without this the
+    generic sweep reached the array without a key in hand and filed every
+    element as a bare session token — a panel ``refresh_tokens`` export then
+    landed in both buckets, and import ran each token twice (OAuth refresh,
+    then sessionToken -> bootstrap, which answers 451 / Missing auth).
+    """
+    if isinstance(v, str):
+        if _is_token(v):
+            dest.append(_norm(v))
+            detected.append(label)
+        return
+    if isinstance(v, list):
+        for x in v:
+            if isinstance(x, str) and _is_token(x):
+                dest.append(_norm(x))
+                detected.append(label)
+
+
 def _walk_json(obj, sessions, refresh, detected, depth=0):
     if depth > 8 or obj is None:
         return
@@ -99,6 +121,14 @@ def _walk_json(obj, sessions, refresh, detected, depth=0):
     if isinstance(obj, dict):
         for k, v in obj.items():
             kl = str(k).lower()
+            # 复数 token 数组按 key 定桶，别再让元素以裸字符串身份被下面
+            # 的分支收进 sessions。
+            if kl in ("refresh_tokens", "refreshtokens"):
+                _collect_str_list(v, refresh, detected, f"json:{k}")
+                continue
+            if kl in ("session_tokens", "sessiontokens"):
+                _collect_str_list(v, sessions, detected, f"json:{k}")
+                continue
             if isinstance(v, str) and _is_token(v):
                 if "refresh" in kl:
                     refresh.append(_norm(v))
@@ -173,16 +203,8 @@ def parse(raw: str, *, bare_as: str = "session_token") -> dict:
             if isinstance(v, str) and _is_token(v):
                 refresh.append(_norm(v))
                 detected.append(f"json:{key}")
-        for key in ("session_tokens", "sessionTokens"):
-            for v in parsed.get(key) or []:
-                if isinstance(v, str) and _is_token(v):
-                    sessions.append(_norm(v))
-                    detected.append(f"json:{key}")
-        for key in ("refresh_tokens", "refreshTokens"):
-            for v in parsed.get(key) or []:
-                if isinstance(v, str) and _is_token(v):
-                    refresh.append(_norm(v))
-                    detected.append(f"json:{key}")
+        # 复数键（session_tokens / refresh_tokens）交给 _walk_json 按 key 分桶，
+        # 这里不再预先收一遍，否则同一批 token 会被记两次。
         _walk_json(parsed, sessions, refresh, detected)
     elif isinstance(parsed, list):
         for v in parsed:

@@ -103,6 +103,28 @@ def test_panel_export_json():
     check(not r["session_tokens"], "panel export: 不误判成 sessionToken")
 
 
+def test_panel_token_export_json():
+    """面板「导出账号 → refresh_token」的 JSON 回读只能进 refresh 桶。
+
+    ``refresh_tokens`` 是复数数组键，元素本身没有键名。以前泛扫把它们
+    当成裸 sessionToken 又收一遍，同一批 token 进两个桶，导入时 refresh
+    走一次 OAuth、bootstrap 再走一次，中国 IP 上会附一串 451 报错。
+    """
+    import json as _json
+    payload = {
+        "format": "fxproxy-refresh-tokens",
+        "version": 1,
+        "exported_at": 1795145024,
+        "refresh_tokens": [D1, D2],
+    }
+    r = parse(_json.dumps(payload, indent=2))
+    check(r["refresh_tokens"] == [D1, D2], "token export: 2 refresh_tokens 按序")
+    check(r["session_tokens"] == [], "token export: 不落进 session 桶")
+    check(r["accounts"] == [], "token export: 不凭空造账号")
+    check(r["detected"].count("json:refresh_tokens") == 1,
+          "token export: 只标记一次，说明没被扫两遍")
+
+
 def test_empty():
     try:
         parse("   ")
@@ -139,7 +161,8 @@ if __name__ == "__main__":
     for fn in [
         test_extension_json, test_cookie_header, test_netscape_cookie_file,
         test_bare_tokens, test_bare_as_refresh, test_json_array,
-        test_fxs_prefixed, test_panel_export_json, test_empty,
+        test_fxs_prefixed, test_panel_export_json,
+        test_panel_token_export_json, test_empty,
         test_all_plugin_formats,
     ]:
         print(f"[{fn.__name__}]")
