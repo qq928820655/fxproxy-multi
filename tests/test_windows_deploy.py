@@ -101,6 +101,18 @@ def main():
     check("HasExited" in ctl, "ctl.ps1 检查进程是否秒退")
     check("Get-RunningPid" in ctl, "ctl.ps1 用 pid 文件防重复启动")
 
+    print("\n[win] 日志编码（双击 / 计划任务两条路径不再乱码）")
+    check("PYTHONIOENCODING" in ctl, "ctl.ps1 固定子进程 stdout 为 UTF-8")
+    check("function Read-LogLines" in ctl, "ctl.ps1 有统一日志读取函数")
+    check("[Text.UTF8Encoding]::new($false, $true)" in ctl,
+          "Read-LogLines 先按严格 UTF-8 试探")
+    check("[Text.Encoding]::Default.GetString" in ctl,
+          "GBK 历史日志退回系统 ANSI 解码")
+    check("Read-LogLines $log 6" in ctl,
+          "status 回显日志走编码自适应")
+    check("Get-Content $log -Tail 6 -Encoding UTF8" not in ctl,
+          "status 不再写死 UTF8 读日志")
+
     print("\n[win] 端口冲突不硬上")
     check("Test-PortBusy $Old" in ins, "install.ps1 旧端口被占时重新选")
     check("自动顺延" in ins, "install.ps1 非交互重跑时顺延到空闲端口")

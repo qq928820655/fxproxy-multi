@@ -66,14 +66,30 @@ function Wait-Ready([int]$Port, [int]$Seconds = 10) {
 function Show-Tail([string]$Name, [int]$Lines = 12) {
     foreach ($f in @((Get-LogName $Name), (Join-Path $RunDir "$Name.err.log"))) {
         if (-not (Test-Path $f)) { continue }
-        # python 按 UTF-8 写日志（行尾 CRLF）。PS 5.1 的 Get-Content 会把 \r 留在
-        # 行尾，输出到控制台时变成一次光标回位，看着像多出个字符。
-        $t = @(Get-Content $f -Tail $Lines -Encoding UTF8 -ErrorAction SilentlyContinue) |
-             ForEach-Object { $_.TrimEnd("`r") }
+        $t = @(Read-LogLines $f $Lines)
         if ($t.Count -eq 0) { continue }
         Write-Host "      --- $([IO.Path]::GetFileName($f)) ---" -ForegroundColor DarkGray
         $t | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
     }
+}
+
+# 日志编码不能写死：桌面双击、工具会话、计划任务三条启动路径的 locale 不一样，
+# python 按 locale 写重定向日志，同一天里会出现 UTF-8 和 GBK 混着来。
+# 严格 UTF-8 解码成功就按 UTF-8，遇到非法字节退回系统 ANSI（中文机是 GBK）。
+function Read-LogLines([string]$Path, [int]$Lines) {
+    # 日志正被 pythonw 的 stdout 重定向持有，普通 ReadAllBytes 会撞共享冲突。
+    $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+        $ms = New-Object IO.MemoryStream
+        try { $fs.CopyTo($ms); $bytes = $ms.ToArray() }
+        finally { $ms.Dispose() }
+    } finally { $fs.Dispose() }
+    $strict = [Text.UTF8Encoding]::new($false, $true)
+    try { $text = $strict.GetString($bytes) }
+    catch { $text = [Text.Encoding]::Default.GetString($bytes) }
+    $all = $text -split "`r?`n"
+    if ($all.Count -gt $Lines) { $all = $all[($all.Count - $Lines)..($all.Count - 1)] }
+    return @($all | ForEach-Object { $_.TrimEnd("`r") })
 }
 
 function Read-Cfg {
@@ -124,6 +140,9 @@ function Get-SvcProcs([string]$Kind) {
 function Start-Svc([string]$Name, [string[]]$ArgList) {
     $log = Get-LogName $Name
     $err = Join-Path $RunDir "$Name.err.log"
+    # 把子进程 stdout/stderr 固定成 UTF-8，不管父进程是 cmd / PS / 计划任务。
+    # Start-Process 会继承当前进程环境，所以改这里就够了。
+    $env:PYTHONIOENCODING = "utf-8"
     if (Test-Path $PyW) {
         $exe  = $PyW
         # -u 关掉 stdout 缓冲。pythonw 没有控制台，stdout 是块缓冲的，
@@ -295,8 +314,7 @@ function Render-Status([bool]$DeepQuery, [string]$Footer) {
     foreach ($name in @("proxy", "web")) {
         $log = Get-LogName $name
         if (Test-Path $log) {
-            $tail = @(Get-Content $log -Tail 6 -Encoding UTF8 -ErrorAction SilentlyContinue) |
-                    ForEach-Object { $_.TrimEnd("`r") }
+            $tail = @(Read-LogLines $log 6)
             Write-Host ""
             Write-Host "  --- $name 日志末尾 ---" -ForegroundColor DarkGray
             if ($tail.Count -gt 0) {
