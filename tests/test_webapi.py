@@ -313,7 +313,7 @@ async def main():
             check(R2 in panel.pool.tokens, "cookie 模式: refresh token 直接入池")
 
             print("[api] 测速/出口探测计入本地流量")
-            _saved_traffic = dict(panel._traffic)
+            _saved_traffic = json.loads(json.dumps(panel._traffic))
             class _FakeSrv:
                 instances = []
                 def __init__(self, *a, **k):
@@ -358,7 +358,7 @@ async def main():
                     pass
 
             async def _fake_open(host, port, th, tp):
-                return _R(), _W(), b""
+                return _R(), _W(), b"", None
 
             _old_open = panel._vless_open_tunnel
             panel._vless_open_tunnel = _fake_open
@@ -369,6 +369,13 @@ async def main():
                 check(panel._local_used() > before, "出口探测流量计入本地统计")
             finally:
                 panel._vless_open_tunnel = _old_open
+            print("[api] 本地流量按账号归因")
+            panel._add_traffic(100, 200, panel.pool.clients[0])
+            r = await cli.get("/api/accounts")
+            dd = await r.json()
+            check(dd["accounts"][0]["local_used_bytes"] == 300,
+                  "本地流量记到对应账号")
+            check(dd["accounts"][0]["local_up_bytes"] == 100, "上行按账号归因")
             # 还原流量计数，避免污染后续订阅头断言
             panel._traffic.clear()
             panel._traffic.update(_saved_traffic)

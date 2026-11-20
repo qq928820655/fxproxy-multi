@@ -369,7 +369,7 @@ def test_proxy_splice_traffic():
 
     srv = ProxyServer(GuardianClient("t"), NodePicker(_C()))
     got = []
-    srv._on_traffic = lambda up, down: got.append((up, down))
+    srv._on_traffic = lambda up, down, gc=None: got.append((up, down))
 
     class _Block:
         def __init__(self, first):
