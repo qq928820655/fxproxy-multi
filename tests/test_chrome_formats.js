@@ -21,12 +21,12 @@ function check(cond, label) {
 check(F.tokensOf(payload).length === 2, "tokensOf 2 tokens");
 check(F.toJSON(payload).includes('"session_token"'), "JSON includes accounts");
 
-// 下拉里只留两种真正不同的东西：cookie 头和裸 token 内容一致，合并掉了
+// 只导一种：Cookie 头。面板默认项「Cookie / 插件导出」直接认它
 const fmtKeys = Object.keys(F.FORMATS);
-check(fmtKeys.length === 2 && fmtKeys.join(",") === "session,email",
-      "FORMATS = session,email（cookie 已合并）");
-check(F.format(payload, "cookie") === F.toLines(payload),
-      "已删掉的 cookie 选项回落到 session");
+check(fmtKeys.length === 1 && fmtKeys[0] === "cookie",
+      "FORMATS 只有 cookie 一项");
+check(F.format(payload) === F.toCookieHeader(payload),
+      "format() 固定输出 Cookie 头");
 
 const lines = F.toLines(payload);
 check(lines.trim().split("\n").length === 2, "lines = 2 rows");

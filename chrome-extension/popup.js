@@ -1,7 +1,7 @@
 "use strict";
 
-// 导出格式只包含两种真正不同的东西：sessionToken、邮箱。
-// 原来的「Cookie 头」和 sessionToken 是同一串字符，只多了个前缀，已合并。
+// 只导一种格式：Cookie 头。面板「添加账号」的默认项就是「Cookie / 插件导出」，
+// 输入框提示写的也是 "sessionToken=xxx Cookie 头"，导出端跟着它走，粘贴即用。
 // refresh_token 不在这里 —— FxA 的 /oauth/token 要 Hawk 签名，
 // 浏览器端用 Bearer 调只会拿到 401 "Invalid authentication token in
 // request signature"。refresh_token 由面板拿 sessionToken 换，插件不重复这条路。
@@ -9,7 +9,6 @@
 var msg = document.getElementById("msg");
 var out = document.getElementById("out");
 var btn = document.getElementById("extract");
-var fmtSel = document.getElementById("format");
 var lastPayload = null;
 
 // 版本号从 manifest 读，改版本只改一处。判断装没装新版就看这行。
@@ -57,11 +56,11 @@ btn.addEventListener("click", async function () {
   try {
     var payload = await grab();
     lastPayload = payload;
-    out.value = FxproxyFormats.format(payload, fmtSel.value);
+    out.value = FxproxyFormats.format(payload);
     var n = FxproxyFormats.tokensOf(payload).length;
     try {
       await navigator.clipboard.writeText(out.value);
-      say("已复制 " + n + " 个凭证，到面板选同一项粘贴", "ok");
+      say("已复制 " + n + " 个凭证，粘到面板「Cookie / 插件导出」", "ok");
     } catch (e) {
       out.focus(); out.select();
       say("自动复制被拦：文本框已全选，按 Ctrl+C", "err");
@@ -71,10 +70,4 @@ btn.addEventListener("click", async function () {
   } finally {
     btn.disabled = false;
   }
-});
-
-// 换选项时用缓存重算，不必再点一次
-fmtSel.addEventListener("change", function () {
-  if (!lastPayload) return;
-  out.value = FxproxyFormats.format(lastPayload, fmtSel.value);
 });
