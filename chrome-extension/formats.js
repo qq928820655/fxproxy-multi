@@ -99,17 +99,21 @@
     return out.join("\n") + (out.length ? "\n" : "");
   }
 
-  // 导出格式只列插件真能生成的三种。refresh_token 不在其中：它必须由面板
-  // 用 sessionToken 去 FxA 换（Hawk 签名 + PKCE），浏览器端做不了，
-  // 硬塞一个槽位只会让人点了报错。
+  // 导出格式只列两种真正不同的东西。
+  //
+  // 以前还有个「Cookie 头」，内容就是 `sessionToken=<同一个 token>` ——
+  // 和裸 token 只差 13 个字符的前缀，面板两个入口吃的也是同一段文本。
+  // 摆两个选项等于让人做一次没有区别的选择，删掉。
+  //
+  // refresh_token 不在其中：它必须由面板用 sessionToken 去 FxA 换
+  // （Hawk 签名 + PKCE），浏览器端做不了。
   var FORMATS = {
-    cookie:  { label: "Cookie 头", ext: "txt", fn: toCookieHeader },
     session: { label: "sessionToken", ext: "txt", fn: toLines },
     email:   { label: "邮箱", ext: "txt", fn: toEmails }
   };
 
   function format(payload, kind) {
-    var f = FORMATS[kind] || FORMATS.cookie;
+    var f = FORMATS[kind] || FORMATS.session;
     return f.fn(payload);
   }
 

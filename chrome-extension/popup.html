@@ -33,15 +33,14 @@
 
   <label for="format">导出格式</label>
   <select id="format">
-    <option value="cookie">Cookie 头（默认，最省事）</option>
-    <option value="session">sessionToken（每行一个）</option>
+    <option value="session">sessionToken（默认，每行一个）</option>
     <option value="email">邮箱（面板还需填密码）</option>
   </select>
 
   <button id="extract" style="margin-top:10px;">提取并复制凭证</button>
   <div id="msg"></div>
   <textarea id="out" readonly placeholder="提取结果会显示在这里"></textarea>
-  <div class="hint" id="tip">三种格式，面板「添加账号」里都有对应的方式，选同一种即可。refresh_token 只能在面板里由 sessionToken 换出，插件无法生成。</div>
+  <div class="hint" id="tip">sessionToken 粘到面板「Cookie / 插件导出」或「sessionToken」任一项都能识别。refresh_token 只能在面板里由 sessionToken 换出，插件无法生成。</div>
 
   <script src="formats.js"></script>
   <script src="popup.js"></script>

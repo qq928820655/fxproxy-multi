@@ -1,6 +1,7 @@
 "use strict";
 
-// 导出格式只包含插件真能生成的东西：Cookie 头、sessionToken、邮箱。
+// 导出格式只包含两种真正不同的东西：sessionToken、邮箱。
+// 原来的「Cookie 头」和 sessionToken 是同一串字符，只多了个前缀，已合并。
 // refresh_token 不在这里 —— FxA 的 /oauth/token 要 Hawk 签名，
 // 浏览器端用 Bearer 调只会拿到 401 "Invalid authentication token in
 // request signature"。refresh_token 由面板拿 sessionToken 换，插件不重复这条路。
