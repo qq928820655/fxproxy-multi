@@ -405,13 +405,13 @@ PAGE = r"""<!doctype html>
     <div class="row">
       <label>方式</label>
       <select id="loginMode">
-        <option value="token">直接粘贴 refresh_token（最稳）</option>
         <option value="cookie">Cookie / 插件导出（推荐）</option>
+        <option value="token">直接粘贴 refresh_token（最稳）</option>
         <option value="password">邮箱 + 密码</option>
         <option value="session">sessionToken</option>
       </select>
     </div>
-    <div id="rtFields" class="row" style="margin-top:10px;">
+    <div id="rtFields" class="row" style="margin-top:10px; display:none;">
       <input id="refreshToken" placeholder="粘贴 refresh_token (hex)" style="width:100%;">
     </div>
     <div id="pwFields" class="row" style="margin-top:10px; display:none;">
@@ -421,7 +421,7 @@ PAGE = r"""<!doctype html>
     <div id="stFields" class="row" style="margin-top:10px; display:none;">
       <input id="sessionToken" placeholder="粘贴 sessionToken (hex)" style="width:100%;">
     </div>
-    <div id="ckFields" style="margin-top:10px; display:none;">
+    <div id="ckFields" style="margin-top:10px;">
       <textarea id="cookieData" rows="5" style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px;" placeholder="粘贴 Chrome 插件导出的 JSON，或 sessionToken=xxx Cookie 头，可一次贴多个"></textarea>
       <div class="muted" style="font-size:12px;margin-top:4px;">住宅 IP 登录 → 点插件「提取并复制」→ 粘贴到这里。支持插件 JSON / Cookie 头 / 多个 token，批量自动入池。</div>
     </div>
@@ -918,6 +918,7 @@ $("loginMode").onchange = () => {
   $("stFields").style.display = m === "session" ? "flex" : "none";
   $("ckFields").style.display = m === "cookie" ? "block" : "none";
 };
+$("loginMode").onchange();
 async function doLogin(body, btn){
   btn.disabled = true; $("loginMsg").textContent = "处理中，请稍候…";
   const r = await fetch("/api/login",{method:"POST",
