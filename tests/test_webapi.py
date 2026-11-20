@@ -748,6 +748,54 @@ async def main():
                       "重复导入也补回邮箱")
         finally:
             guardian.GuardianClient.quota = orig_quota
+    print("[api] 面板登录 / 改密")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "panel_auth.json"
+        cfgpath.write_text(json.dumps({
+            "refresh_tokens": ["tokA"], "pool_strategy": "round-robin",
+            "host": "127.0.0.1", "http_port": 8080, "socks_port": 1080,
+        }), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        app = web.Application(middlewares=[webui_mod.panel_auth_middleware(panel)])
+        app.add_routes([
+            web.get("/", panel.index),
+            web.get("/api/panel/auth", panel.api_panel_auth),
+            web.post("/api/panel/login", panel.api_panel_login),
+            web.post("/api/panel/logout", panel.api_panel_logout),
+            web.post("/api/panel/password", panel.api_panel_password),
+            web.get("/api/accounts", panel.api_accounts),
+            web.get("/api/version", panel.api_version),
+        ])
+        async with TestClient(TestServer(app)) as cli:
+            r = await cli.get("/")
+            body = await r.text()
+            check(r.status == 200 and "请输入面板密码" in body,
+                  "未登录访问 / 给登录页")
+            r = await cli.get("/api/accounts")
+            check(r.status == 401, "未登录访问 API 返回 401")
+            r = await cli.get("/api/version")
+            check(r.status == 200, "版本接口公开（一键更新健康检查用）")
+            r = await cli.post("/api/panel/login", json={"password": "wrong"})
+            check(r.status == 401, "错误密码被拒")
+            r = await cli.post("/api/panel/login", json={"password": "admin"})
+            check(r.status == 200 and (await r.json()).get("ok"),
+                  "默认密码 admin 可登录")
+            r = await cli.get("/api/accounts")
+            check(r.status == 200, "登录后可访问 API")
+            r = await cli.post("/api/panel/password",
+                               json={"old": "admin", "new": "admin"})
+            check(r.status == 200, "新密码可与原密码一致")
+            r = await cli.post("/api/panel/password",
+                               json={"old": "admin", "new": "s3cret"})
+            check(r.status == 200, "修改为新密码成功")
+            r = await cli.post("/api/panel/logout")
+            check(r.status == 200, "退出登录")
+            r = await cli.get("/api/accounts")
+            check(r.status == 401, "退出后 API 再次 401")
+            r = await cli.post("/api/panel/login", json={"password": "admin"})
+            check(r.status == 401, "旧密码已失效")
+            r = await cli.post("/api/panel/login", json={"password": "s3cret"})
+            check(r.status == 200, "新密码可登录")
 
     print(f"\nALL PASS ({PASS} checks)")
 

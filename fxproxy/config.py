@@ -38,6 +38,11 @@ DEFAULTS = {
     "runtime_user_agent": "",
     # 被禁用的节点主机名列表：这些节点不会出现在订阅里，也不会被代理选中。
     "disabled_nodes": [],
+    # 面板登录：首次无 hash 时用默认密码 admin；改密后存 PBKDF2 哈希。
+    # panel_secret 用来给会话 cookie 签名，随机生成后持久化，重启不掉登录。
+    "panel_password_hash": "",
+    "panel_password_salt": "",
+    "panel_secret": "",
 }
 
 _VALID_STRATEGIES = ("round-robin", "quota", "failover")

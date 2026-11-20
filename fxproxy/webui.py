@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -108,6 +111,16 @@ PAGE = r"""<!doctype html>
   .wrap { max-width:760px; margin:0 auto; padding:24px 18px 60px; }
   h1 { font-size:20px; margin:0 0 4px; }
   .sub { color:#8b949e; font-size:13px; margin-bottom:20px; }
+  .hd { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .hdact { display:flex; gap:8px; }
+  .mask { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex;
+          align-items:center; justify-content:center; padding:18px; z-index:50; }
+  .dialog { width:100%; max-width:360px; background:#161b22; border:1px solid #30363d;
+            border-radius:12px; padding:20px; box-shadow:0 8px 30px rgba(0,0,0,.5); }
+  .dialog h3 { margin:0 0 14px; font-size:16px; }
+  .dialog label { display:block; margin:10px 0 5px; }
+  .dialog input { width:100%; }
+  .dialog .dmsg { min-height:18px; margin-top:10px; font-size:12px; color:#f85149; }
   .card { background:#161b22; border:1px solid #30363d; border-radius:12px;
           padding:18px; margin-bottom:16px; }
   .card h2 { font-size:14px; margin:0 0 12px; color:#e6edf3; }
@@ -237,7 +250,13 @@ PAGE = r"""<!doctype html>
 <body>
 <div id="flash"></div>
 <div class="wrap">
-  <h1>fxproxy 控制面板</h1>
+  <div class="hd">
+    <h1>fxproxy 控制面板</h1>
+    <div class="hdact">
+      <button id="pwdBtn" class="sm">修改密码</button>
+      <button id="logoutBtn" class="sm">退出</button>
+    </div>
+  </div>
   <div class="sub">Firefox IP Protection · 多账号池 · 每账号每月 50GB 落地代理</div>
 
   <div class="tabs" role="tablist">
@@ -473,6 +492,23 @@ PAGE = r"""<!doctype html>
     </div>
     <div class="muted" style="margin-top:6px;font-size:12px;">
       含全部 refresh_token，可粘到服务器的 <code>~/.config/fxproxy/config.json</code>（对外用记得把 host 改成 0.0.0.0）。——凭证是私密信息，别外传。
+    </div>
+  </div>
+
+  <div id="pwdMask" class="mask" style="display:none">
+    <div class="dialog">
+      <h3>修改面板密码</h3>
+      <label for="pwdOld">原密码</label>
+      <input id="pwdOld" type="password" autocomplete="current-password">
+      <label for="pwdNew">新密码</label>
+      <input id="pwdNew" type="password" autocomplete="new-password">
+      <label for="pwdNew2">确认新密码</label>
+      <input id="pwdNew2" type="password" autocomplete="new-password">
+      <div class="dmsg" id="pwdMsg"></div>
+      <div class="row" style="justify-content:flex-end;margin-top:6px;">
+        <button id="pwdCancel" class="sm">取消</button>
+        <button id="pwdSave" class="primary sm">保存</button>
+      </div>
     </div>
   </div>
 </div>
@@ -711,6 +747,7 @@ function setAddOpen(v, auto){
 function timeoutFetch(url, opts, ms){
   const c = new AbortController(), t = setTimeout(()=>c.abort(), ms||15000);
   return fetch(url, Object.assign({}, opts||{}, {signal:c.signal}))
+    .then(r => { if(r.status === 401 && !String(url).includes("/api/panel/")) location.reload(); return r; })
     .finally(()=>clearTimeout(t));
 }
 async function loadState(){
@@ -1147,6 +1184,37 @@ $("testBtn").onclick = async () => {
   $("egress").textContent="测试中…";
   const r = await fetch("/api/egress"); const d = await r.json();
   $("egress").textContent = d.ip ? ("当前出口 IP："+d.ip) : ("测试失败："+(d.error||"")); };
+// 面板登录 / 改密
+$("logoutBtn").onclick = async () => {
+  try { await fetch("/api/panel/logout", {method:"POST"}); } catch(e) {}
+  location.reload();
+};
+function openPwd(){
+  $("pwdOld").value = ""; $("pwdNew").value = ""; $("pwdNew2").value = "";
+  $("pwdMsg").textContent = ""; $("pwdMask").style.display = "flex";
+  setTimeout(()=>$("pwdOld").focus(), 30);
+}
+function closePwd(){ $("pwdMask").style.display = "none"; }
+$("pwdBtn").onclick = openPwd;
+$("pwdCancel").onclick = closePwd;
+$("pwdMask").onclick = (e) => { if(e.target === $("pwdMask")) closePwd(); };
+$("pwdSave").onclick = async () => {
+  const oldPw = $("pwdOld").value, nw = $("pwdNew").value, nw2 = $("pwdNew2").value;
+  if(!nw){ $("pwdMsg").textContent = "新密码不能为空"; return; }
+  if(nw !== nw2){ $("pwdMsg").textContent = "两次输入的新密码不一致"; return; }
+  const btn = $("pwdSave"); btn.disabled = true; $("pwdMsg").textContent = "";
+  try{
+    const r = await fetch("/api/panel/password", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({old: oldPw, new: nw}),
+    });
+    const d = await r.json().catch(()=>({}));
+    if(r.status === 401){ location.reload(); return; }
+    if(r.ok && d.ok){ closePwd(); flash("密码已更新"); return; }
+    $("pwdMsg").textContent = d.error || "修改失败";
+  }catch(e){ $("pwdMsg").textContent = "网络错误，请重试"; }
+  btn.disabled = false;
+};
 (async()=>{ switchTab((location.hash||"#run").slice(1), true);
   await loadServers(); loadNodes(false); await loadState(); await loadAccounts();
   verInit();
@@ -1155,6 +1223,110 @@ $("testBtn").onclick = async () => {
 </script>
 </body>
 </html>"""
+
+
+_PANEL_DEFAULT_PASSWORD = "admin"
+_PANEL_COOKIE = "fxproxy_panel"
+_PANEL_SESSION_TTL = 7 * 24 * 3600
+_PANEL_PBKDF2_ROUNDS = 200_000
+
+# 面板鉴权放行的路径：登录/鉴权状态、版本（一键更新的健康检查在重启后
+# 无 cookie 时也要能读）、订阅与代理数据面（客户端不会带面板 cookie）。
+_PANEL_PUBLIC_PATHS = frozenset({
+    "/api/panel/login", "/api/panel/auth", "/api/version",
+    "/clash.yaml", "/sub", "/ws-echo", "/favicon.ico",
+})
+_PANEL_PUBLIC_PREFIXES = ("/vless",)
+
+
+def _panel_hash(password: str, salt_hex: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex),
+        _PANEL_PBKDF2_ROUNDS).hex()
+
+
+LOGIN_PAGE = r"""<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fxproxy 面板登录</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#0d1117; color:#e6edf3;
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .box { width:100%; max-width:360px; padding:28px; background:#161b22;
+         border:1px solid #30363d; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,.4); }
+  h1 { margin:0 0 4px; font-size:18px; }
+  .sub { color:#8b949e; font-size:12px; margin-bottom:20px; }
+  label { display:block; color:#8b949e; font-size:12px; margin:0 0 6px; }
+  input { width:100%; padding:10px 12px; background:#0d1117; color:#e6edf3;
+          border:1px solid #30363d; border-radius:8px; font-size:14px; outline:none; }
+  input:focus { border-color:#58a6ff; }
+  button { width:100%; margin-top:16px; padding:10px 12px; background:#238636; color:#fff;
+           border:1px solid #2ea043; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:default; }
+  .msg { min-height:18px; margin-top:12px; font-size:12px; color:#f85149; }
+  .hint { margin-top:14px; font-size:12px; color:#8b949e; }
+  code { color:#e6edf3; background:#0d1117; padding:1px 5px; border-radius:4px; }
+</style></head>
+<body>
+<form class="box" id="f">
+  <h1>fxproxy 控制面板</h1>
+  <div class="sub">请输入面板密码</div>
+  <label for="pw">密码</label>
+  <input id="pw" type="password" autocomplete="current-password" autofocus>
+  <button id="btn" type="submit">登录</button>
+  <div class="msg" id="msg"></div>
+  <div class="hint" id="hint" style="display:none">首次使用默认密码：<code>admin</code>，登录后可在面板内修改。</div>
+</form>
+<script>
+const $ = id => document.getElementById(id);
+(async () => {
+  try {
+    const r = await fetch("/api/panel/auth");
+    const d = await r.json();
+    if (d.authed) { location.replace("/"); return; }
+    if (d.default_password) $("hint").style.display = "";
+  } catch (e) {}
+})();
+$("f").onsubmit = async (e) => {
+  e.preventDefault();
+  const pw = $("pw").value;
+  if (!pw) { $("msg").textContent = "请输入密码"; return; }
+  $("btn").disabled = true; $("msg").textContent = "";
+  try {
+    const r = await fetch("/api/panel/login", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({password: pw}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) { location.replace("/"); return; }
+    $("msg").textContent = d.error || "登录失败";
+  } catch (err) {
+    $("msg").textContent = "网络错误，请重试";
+  }
+  $("btn").disabled = false;
+};
+</script>
+</body></html>"""
+
+
+def panel_auth_middleware(panel):
+    """拦截面板页面与 API，未登录时给登录页 / 401。"""
+    @web.middleware
+    async def _auth(request, handler):
+        path = request.path
+        if path in _PANEL_PUBLIC_PATHS or path.startswith(_PANEL_PUBLIC_PREFIXES):
+            return await handler(request)
+        if panel._panel_authed(request):
+            return await handler(request)
+        if path.startswith("/api/"):
+            return web.json_response(
+                {"error": "未登录", "login_required": True}, status=401)
+        return web.Response(text=LOGIN_PAGE, content_type="text/html")
+    return _auth
 
 
 class Panel:
@@ -1201,6 +1373,65 @@ class Panel:
             return r.stdout.strip() if r.returncode == 0 else ""
         except Exception:
             return ""
+
+    # ---- 面板登录 -----------------------------------------------------
+    def _panel_save(self):
+        try:
+            cfgmod.save(self.cfg, self.config_path)
+        except Exception:
+            pass
+
+    def _panel_default_password(self) -> bool:
+        """还没改过密码（没有哈希）时为 True，默认密码 admin。"""
+        return not (self.cfg.get("panel_password_hash") or "").strip()
+
+    def _panel_verify_password(self, password: str) -> bool:
+        if not isinstance(password, str):
+            return False
+        stored = (self.cfg.get("panel_password_hash") or "").strip()
+        if not stored:
+            return hmac.compare_digest(password, _PANEL_DEFAULT_PASSWORD)
+        salt = (self.cfg.get("panel_password_salt") or "").strip()
+        if not salt:
+            return False
+        try:
+            calc = _panel_hash(password, salt)
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(calc, stored)
+
+    def _panel_set_password(self, password: str):
+        salt = secrets.token_hex(16)
+        self.cfg["panel_password_salt"] = salt
+        self.cfg["panel_password_hash"] = _panel_hash(password, salt)
+        self._panel_save()
+
+    def _panel_secret(self) -> str:
+        s = (self.cfg.get("panel_secret") or "").strip()
+        if not s:
+            s = secrets.token_hex(32)
+            self.cfg["panel_secret"] = s
+            self._panel_save()
+        return s
+
+    def _panel_cookie_value(self) -> str:
+        exp = str(int(time.time()) + _PANEL_SESSION_TTL)
+        sig = hmac.new(self._panel_secret().encode(), exp.encode(),
+                       hashlib.sha256).hexdigest()
+        return f"{exp}.{sig}"
+
+    def _panel_authed(self, req) -> bool:
+        val = req.cookies.get(_PANEL_COOKIE) or ""
+        if "." not in val:
+            return False
+        exp_s, sig = val.split(".", 1)
+        if not exp_s.isdigit():
+            return False
+        expected = hmac.new(self._panel_secret().encode(), exp_s.encode(),
+                            hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return False
+        return int(exp_s) >= time.time()
 
     # ---- local traffic meter -----------------------------------------
     def _traffic_path(self) -> Path:
@@ -1359,6 +1590,55 @@ class Panel:
     # ---- handlers ----
     async def index(self, req):
         return web.Response(text=PAGE, content_type="text/html")
+
+    # ---- 面板登录 / 改密 ----
+    async def api_panel_auth(self, req):
+        return web.json_response({
+            "authed": self._panel_authed(req),
+            "default_password": self._panel_default_password(),
+        })
+
+    async def api_panel_login(self, req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        password = body.get("password")
+        if not self._panel_verify_password(password if isinstance(password, str) else ""):
+            await asyncio.sleep(0.3)  # 轻微延迟，拖慢暴力尝试
+            return web.json_response({"error": "密码错误"}, status=401)
+        resp = web.json_response({
+            "ok": True,
+            "default_password": self._panel_default_password(),
+        })
+        resp.set_cookie(_PANEL_COOKIE, self._panel_cookie_value(),
+                        max_age=_PANEL_SESSION_TTL, httponly=True,
+                        samesite="Lax", path="/")
+        return resp
+
+    async def api_panel_logout(self, req):
+        resp = web.json_response({"ok": True})
+        resp.del_cookie(_PANEL_COOKIE, path="/")
+        return resp
+
+    async def api_panel_password(self, req):
+        if not self._panel_authed(req):
+            return web.json_response({"error": "未登录", "login_required": True},
+                                     status=401)
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        old = body.get("old") if isinstance(body.get("old"), str) else ""
+        new = body.get("new") if isinstance(body.get("new"), str) else ""
+        if not self._panel_verify_password(old):
+            await asyncio.sleep(0.2)
+            return web.json_response({"error": "原密码不正确"}, status=400)
+        if not new.strip():
+            return web.json_response({"error": "新密码不能为空"}, status=400)
+        # 允许新密码与原密码一致（按需求不强制不同）
+        self._panel_set_password(new)
+        return web.json_response({"ok": True})
 
     def _egress_country(self) -> str:
         """Chinese country label of the node that last carried traffic."""
@@ -3038,7 +3318,7 @@ class Panel:
 
 def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=True):
     panel = Panel(config_path, web_host=web_host, web_port=web_port)
-    app = web.Application()
+    app = web.Application(middlewares=[panel_auth_middleware(panel)])
 
     async def _enlarge_executor(_app):
         # Default asyncio pool is min(32, cpu+4) = 6 on 2-core hosts, which
@@ -3086,6 +3366,10 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
     app.on_cleanup.append(_stop_muxserver)
     app.add_routes([
         web.get("/", panel.index),
+        web.get("/api/panel/auth", panel.api_panel_auth),
+        web.post("/api/panel/login", panel.api_panel_login),
+        web.post("/api/panel/logout", panel.api_panel_logout),
+        web.post("/api/panel/password", panel.api_panel_password),
         web.get("/api/state", panel.api_state),
         web.get("/api/accounts", panel.api_accounts),
         web.post("/api/accounts/refresh", panel.api_accounts_refresh),
