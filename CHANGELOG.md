@@ -14,14 +14,14 @@
 ### 变更
 
 - fix(parse): refresh_token 导出回读不再混进 session 桶
-
-refresh_tokens 是复数数组键，元素本身没有键名。泛扫把它们当裸 token 又
-收进 session 桶，同一批 token 进两个桶 —— 导入时先走 OAuth refresh，再拿
-同一个值走 sessionToken -> bootstrap，返回里附一串 451 / Missing
-authentication。
-
-_walk_json 对 refresh_tokens / session_tokens 按 key 定桶后不再下探，
-parse 里重复的显式收取一并删掉。版本 0.5.5。
+  refresh_tokens 是复数数组键，元素本身没有键名。泛扫把它们当裸 token 又
+  收进 session 桶，同一批 token 进两个桶 —— 导入时先走 OAuth refresh，再拿
+  同一个值走 sessionToken -> bootstrap，返回里附一串 451 / Missing
+  authentication。
+  _walk_json 对 refresh_tokens / session_tokens 按 key 定桶后不再下探，
+  parse 里重复的显式收取一并删掉。版本 0.5.5。
+- 新增 tools/release_all.py：版本、测试、打包、同步部署、同步扩展副本、
+  提交推送合成一条命令，任一步失败即中止。
 
 ## [0.5.4] — 2026-11-20
 

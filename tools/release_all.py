@@ -113,6 +113,16 @@ def set_usr_ver(v: str):
     write("fxproxy-userscript/fxproxy.user.js", s)
 
 
+def _bullet(msg: str) -> str:
+    """多行提交说明在 CHANGELOG 里续行缩进 2 空格，否则会被当成新段落。"""
+    lines = [ln.rstrip() for ln in (msg or "").strip().splitlines()]
+    if not lines:
+        return "-"
+    out = ["- " + lines[0]]
+    out += [("  " + ln) if ln.strip() else "" for ln in lines[1:]]
+    return "\n".join(out)
+
+
 def changelog_new_entry(pkg: str, ext: str, usr: str, msg: str):
     """插入新条目；已存在同一版本条目时只改组件版本行 + 追加一条变更。"""
     cl = read("CHANGELOG.md")
@@ -126,13 +136,14 @@ def changelog_new_entry(pkg: str, ext: str, usr: str, msg: str):
         block = cl[m.start():end]
         block = re.sub(comp_re, comp, block, count=1)
         # 追加到第一个 ### 小节末尾
-        if f"- {msg}" not in block:
-            block = block.rstrip("\n") + f"\n- {msg}\n"
+        head = (msg or "").strip().splitlines()[0] if (msg or "").strip() else ""
+        if head and f"- {head}" not in block:
+            block = block.rstrip("\n") + "\n" + _bullet(msg) + "\n"
         write("CHANGELOG.md", cl[:m.start()] + block + cl[end:])
         return
 
     entry = (f"\n## [{pkg}] — {date.today().isoformat()}\n\n"
-             f"{comp}\n\n### 变更\n\n- {msg}\n")
+             f"{comp}\n\n### 变更\n\n{_bullet(msg)}\n")
     idx = cl.find("\n## [")
     if idx == -1:
         write("CHANGELOG.md", cl.rstrip("\n") + "\n" + entry)
