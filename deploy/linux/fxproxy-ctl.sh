@@ -256,13 +256,37 @@ cmd_update() {
 
   if [[ -d "$src/.git" ]]; then
     log "git 部署，pull 更新 $src ..."
+    git -C "$src" fetch --quiet origin 2>/dev/null || die "git fetch 失败"
+    # 解析要比较/快进的远端分支：优先本分支 upstream；没设 upstream 时退回
+    # origin/HEAD（默认分支），再退回 origin/main。老逻辑只认 @{u}，取不到时
+    # rev-list 失败被当成 0，会误报「已是最新」，pull 也会直接报错。
+    local uref=""
+    uref="$(git -C "$src" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    if [[ -z "$uref" || "$uref" == "HEAD" ]]; then
+      if git -C "$src" rev-parse --verify --quiet 'origin/main' >/dev/null 2>&1; then
+        uref="origin/main"
+      else
+        uref="$(git -C "$src" rev-parse --abbrev-ref 'origin/HEAD' 2>/dev/null || true)"
+      fi
+    fi
+    if [[ -z "$uref" || "$uref" == "origin/HEAD" ]]; then
+      die "无法确定远端分支（没有 upstream，也找不到 origin/main）"
+    fi
     if [[ "$check" == "1" ]]; then
-      git -C "$src" fetch --quiet origin 2>/dev/null || die "git fetch 失败"
-      local behind; behind="$(git -C "$src" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)"
-      if [[ "$behind" == "0" ]]; then log "已是最新（${cur:-未知}）"; else log "落后 $behind 个提交，可更新"; fi
+      local behind
+      behind="$(git -C "$src" rev-list --count "HEAD..$uref" 2>/dev/null || echo '?')"
+      if [[ "$behind" == "0" ]]; then
+        log "已是最新（${cur:-未知}，对比 $uref）"
+      elif [[ "$behind" == "?" ]]; then
+        warn "无法比较 HEAD 与 $uref"
+      else
+        log "落后 $behind 个提交，可更新（$uref）"
+      fi
       return 0
     fi
-    git -C "$src" pull --ff-only || die "git pull 失败"
+    # 已经 fetch 过，直接按解析出的远端分支快进；无 upstream 也能用
+    git -C "$src" merge --ff-only "$uref" \
+      || die "快进到 $uref 失败（本地有分叉提交，请手动处理）"
   else
     local tmp info tag url pkg
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/fxproxy-up.XXXXXX")"

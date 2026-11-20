@@ -7,6 +7,17 @@
 扩展、油猴在同一版本区间内的号变写在条目的「组件版本」行里。
 当前快照见 [README](README.md) 顶部的表。
 
+## [0.5.3] — 2026-11-20
+
+组件版本：fxproxy `0.5.3` · Chrome 扩展 `1.2.5` · 油猴 `1.2.0`
+
+### 修复
+
+- **git 部署更新误报「已是最新」**：`fxproxy-ctl update` 只认 `@{u}`，分支没设
+  upstream 时 `rev-list HEAD..@{u}` 失败被当成 0。现在按「upstream → origin/main →
+  origin/HEAD」依次解析远端分支，`--check` 会正确报落后提交数，实际更新改用
+  `git merge --ff-only <远端分支>`，无 upstream 也能快进。
+
 ## [0.5.2] — 2026-11-20
 
 组件版本：fxproxy `0.5.2` · Chrome 扩展 `1.2.5` · 油猴 `1.2.0`
