@@ -1022,7 +1022,7 @@ async function verInit(){
     const r = await fetch("/api/version"); const d = await r.json();
     VER.platform = d.platform_label || d.platform || "";
     if(d.update_proxy) $("ghProxy").value = d.update_proxy;
-    $("verNow").textContent = "v"+d.current;
+    $("verNow").textContent = "v"+d.current + (d.commit ? (" · "+d.commit) : "");
     const kind = (d.install && d.install.kind) || "unknown";
     if(kind === "unknown"){
       $("verMsg").textContent = "当前是 pip 装进 site-packages 的形态，面板没法就地替换代码；用安装脚本或发行包重装一次之后这个按钮才可用。";
@@ -1155,6 +1155,9 @@ class Panel:
     def __init__(self, config_path=None, web_host="127.0.0.1", web_port=8765):
         self.config_path = config_path
         self.cfg = cfgmod.load(config_path)
+        # 当前代码的 git 提交（非 git 安装时为空），面板显示版本时一并给出，
+        # 这样即使版本号没变也能确认实际跑的是哪一版。
+        self._commit = self._read_commit()
         # 控制面 UA 必须在建池（创建 requests.Session）之前设置好
         set_default_user_agent(self.cfg.get("runtime_user_agent", ""))
         self.pool = self._make_pool()
@@ -1173,6 +1176,20 @@ class Panel:
         # 到配置同目录的 traffic.json，重启不清零。
         self._traffic = self._load_traffic()
         self._traffic_flush_at = 0.0
+
+    @staticmethod
+    def _read_commit() -> str:
+        """短 git 提交号；非 git 安装或命令不可用时返回空串。"""
+        try:
+            import subprocess
+            root = Path(__file__).resolve().parents[1]
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=2,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            return ""
 
     # ---- local traffic meter -----------------------------------------
     def _traffic_path(self) -> Path:
@@ -1355,6 +1372,7 @@ class Panel:
         inst = upd.detect_install()
         out = {
             "current": upd.VERSION,
+            "commit": self._commit,
             "platform": plat,
             "platform_label": upd.platform_label(plat),
             "install": inst,

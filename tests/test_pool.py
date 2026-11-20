@@ -23,6 +23,19 @@ def check(cond, msg):
     print(f"  ok  {msg}")
 
 
+def test_version_and_changelog():
+    print("[version] 版本号与 CHANGELOG 一致")
+    import re
+    from fxproxy import __version__
+    root = Path(__file__).resolve().parents[1]
+    pv = re.search(r'^version\s*=\s*"([^"]+)"',
+                   (root / "pyproject.toml").read_text(encoding="utf-8"), re.M)
+    check(pv and pv.group(1) == __version__,
+          f"pyproject 与 __version__ 一致 ({__version__})")
+    cl = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    check(f"## [{__version__}]" in cl, "CHANGELOG 含当前版本条目")
+
+
 def test_config_migration():
     print("[config] 旧单 token 迁移 + 环境变量")
     with tempfile.TemporaryDirectory() as d:
@@ -417,6 +430,7 @@ def test_node_picker_exclude():
 
 
 if __name__ == "__main__":
+    test_version_and_changelog()
     test_config_migration()
     test_env_deployment_overrides()
     test_subscription_uses_public_entry()
