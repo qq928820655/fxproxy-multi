@@ -1557,7 +1557,12 @@ class Panel:
         for i, (c, q) in enumerate(zip(self.pool.clients, snaps)):
             row = dict(q)
             row["cooling"] = self.pool._cool_until.get(i, 0) > now
-            row["email"] = c.email() if q.get("ok") else None
+            # 邮箱和 uid 跟额度状态无关：451 拿不到 quota 时也要显示
+            # 导入时从导出 JSON 带过来的值。缓存为空且额度正常才查 profile。
+            row["email"] = (getattr(c, "_email", None)
+                            or (c.email() if q.get("ok") else None))
+            if not row.get("uid"):
+                row["uid"] = getattr(c, "_uid", None)
             # 本地计量按账号归因：哪条连接用了哪个账号，就记到该账号头上
             slot = accts.get(self._acct_key(c), {})
             row["local_up_bytes"] = int(slot.get("up", 0))
@@ -2084,17 +2089,22 @@ class Panel:
                     if _tok and _a.get("uid"):
                         uid_of[_tok] = str(_a["uid"])
 
-                def _apply_email(rt):
+                def _apply_meta(rt):
+                    # 导出 JSON 里的邮箱/uid 直接贴到 client：区域受限时
+                    # quota/profile 都拿不到，这两项不能跟着一起丢。
                     email = email_of.get(rt)
-                    if not email or self.pool is None:
+                    uid = uid_of.get(rt)
+                    if self.pool is None or not (email or uid):
                         return
                     try:
                         idx = self.pool.tokens.index(rt)
                     except ValueError:
                         return
                     c = self.pool.clients[idx]
-                    if not getattr(c, "_email", None):
+                    if email and not getattr(c, "_email", None):
                         c._email = email
+                    if uid and not getattr(c, "_uid", None):
+                        c._uid = uid
 
                 def _verify(rt):
                     # 只验 refresh_token 本身：OAuth 端点没有区域限制。
@@ -2174,7 +2184,7 @@ class Panel:
                         except ValueError:
                             pass  # 并发下重复：幂等忽略
                 for rt in new_tokens:
-                    _apply_email(rt)
+                    _apply_meta(rt)
                 await asyncio.to_thread(self._persist)
                 out = {"ok": True, "added": added, "skipped": skipped,
                        "updated": updated, "account_count": len(self.pool.clients)}

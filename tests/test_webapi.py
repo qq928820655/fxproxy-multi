@@ -732,6 +732,9 @@ async def main():
                       f"fpn/status 报 451 时仍能导入（{dr}）")
                 check(panel.pool is not None and panel.pool.tokens == [tok],
                       "451 下 token 实际入池")
+                row = panel._account_rows()[0]
+                check(row.get("email") == "x@example.com", "451 下邮箱仍显示")
+                check(row.get("uid") == "9802445", "451 下 uid 仍显示")
         finally:
             guardian.GuardianClient.quota = orig_quota
 
