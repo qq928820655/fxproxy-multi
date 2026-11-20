@@ -4,7 +4,7 @@
 
 | 部件 | 版本 | 版本号所在 | 运行时确认 |
 |---|---|---|---|
-| fxproxy（面板 + 代理 + CLI） | `0.5.10` | `fxproxy/__init__.py`、`pyproject.toml` | `fxproxy --version` |
+| fxproxy（面板 + 代理 + CLI） | `0.5.11` | `fxproxy/__init__.py`、`pyproject.toml` | `fxproxy --version` |
 | Chrome 扩展 | `1.2.5` | `chrome-extension/manifest.json` | 弹窗标题 |
 | 油猴脚本 | `1.2.0` | `fxproxy-userscript/fxproxy.user.js` 的 `@version` | 油猴管理面板 |
 | muxserver（Go 加速器） | 随主包 | 无独立版本号 | — |
@@ -782,7 +782,21 @@ FXPROXY_POOL_STRATEGY=round-robin
 
 不设 `FXPROXY_SUB_*` 时，`/clash.yaml` 用请求 Host 头推导 server（本地/局域网直连可用）；公网部署必须设，否则订阅里的 `127.0.0.1` 指向客户端自己。
 
-订阅内容仍是两个本地节点（HTTP/SOCKS5），账号轮换和节点故障切换都在 fxproxy 内部做，客户端只看到这两个入口。
+订阅内容分两种，取决于你从哪个地址拉 `/clash.yaml`：
+
+- **基础订阅（HTTP 裸端口）**：两条本地入口 `fxproxy-http` / `fxproxy-socks5`，
+  指向 `sub_server`（或请求 Host）的 8080/1080。账号轮换和节点故障切换都在
+  fxproxy 内部做。需要那台机器对外放行这两个端口。
+- **国家节点订阅（HTTPS 入口）**：当面板经 HTTPS 访问（预览域名 / TLS 反代，
+  对外 443）或显式配置了 `sub_server` 时，自动追加 29 国
+  `fxproxy-<国家>` vless 节点，走面板单端口的 WSS（`/vless/<节点>`），
+  **不需要额外下载 xray**；此时会移除两条本地入口，避免客户端选到不可达的
+  裸端口。vless UUID 优先读 `bridge/uuid.txt`，没有则自动生成并写进
+  `config.json` 的 `vless_uuid`。
+
+> MonkeyCode / 只暴露单端口的容器：只有面板端口对外，8080/1080 连不到，
+> 请用**预览域名的 HTTPS 订阅**（国家节点模式）。用 `127.0.0.1` 拉订阅会得到
+> 基础订阅，其中的 `server: 127.0.0.1` 在别的机器上指向它自己，不能用。
 
 ## 安全提示
 

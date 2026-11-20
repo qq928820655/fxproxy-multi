@@ -797,6 +797,35 @@ async def main():
             r = await cli.post("/api/panel/login", json={"password": "s3cret"})
             check(r.status == 200, "新密码可登录")
 
+    print("[api] 订阅国家节点按 HTTPS/公网 Host 生成")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "subgate.json"
+        cfgpath.write_text(json.dumps({
+            "refresh_tokens": ["tokA"], "pool_strategy": "round-robin",
+            "host": "127.0.0.1", "http_port": 8080, "socks_port": 1080,
+        }), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        app = web.Application()
+        app.add_routes([web.get("/clash.yaml", panel.api_clash)])
+        async with TestClient(TestServer(app)) as cli:
+            r = await cli.get("/clash.yaml", headers={"Host": "example.com"})
+            y = await r.text()
+            check("type: vless" not in y, "裸 HTTP 公网 Host 不生成 vless 节点")
+            check('"fxproxy-http"' in y, "裸 HTTP 仍保留本地 http 入口")
+            r = await cli.get("/clash.yaml", headers={
+                "Host": "example.com", "X-Forwarded-Proto": "https"})
+            y = await r.text()
+            check("type: vless" in y, "HTTPS 入口生成 vless 国家节点")
+            check('"fxproxy-http"' not in y, "HTTPS 模式移除本地 http 入口")
+            r = await cli.get("/clash.yaml", headers={
+                "Host": "127.0.0.1", "X-Forwarded-Proto": "https"})
+            y = await r.text()
+            check("type: vless" not in y, "localhost 即使 HTTPS 也不生成节点")
+            panel.cfg["sub_server"] = "example.com"
+            r = await cli.get("/clash.yaml", headers={"Host": "example.com"})
+            y = await r.text()
+            check("type: vless" in y, "显式 sub_server 时 HTTP 也生成节点")
+
     print(f"\nALL PASS ({PASS} checks)")
 
 

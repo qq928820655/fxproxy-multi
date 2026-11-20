@@ -2528,13 +2528,29 @@ class Panel:
             return web.json_response({"error": str(e)})
 
     def _bridge_uuid(self) -> str:
-        """VLESS uuid of the local xray bridge, empty if not deployed."""
+        """VLESS uuid for the built-in /vless server.
+
+        Prefer ``bridge/uuid.txt`` (shared with the optional external xray
+        bridge). Git installs don't ship that file, so fall back to a value
+        persisted in config, generating one on first use. This lets a fresh
+        MonkeyCode/容器 deployment expose per-country nodes without a manual
+        ``uuid.txt`` step.
+        """
         try:
-            from pathlib import Path
             p = Path(__file__).resolve().parent.parent / "bridge" / "uuid.txt"
-            return p.read_text().strip() if p.exists() else ""
+            u = p.read_text().strip() if p.exists() else ""
+            if u:
+                return u
         except Exception:
-            return ""
+            pass
+        u = (self.cfg.get("vless_uuid") or "").strip()
+        if u:
+            return u
+        import uuid as _uuid
+        u = str(_uuid.uuid4())
+        self.cfg["vless_uuid"] = u
+        self._panel_save()
+        return u
 
     def _bridge_host(self, req) -> str:
         host = req.host.split(":", 1)[0]
@@ -2542,8 +2558,30 @@ class Panel:
             host = "127.0.0.1"
         return self.cfg.get("sub_server") or host
 
-    def _bridge_available(self, host: str) -> bool:
-        return bool(self._bridge_uuid()) and host != "127.0.0.1"
+    @staticmethod
+    def _is_local_host(host: str) -> bool:
+        return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", "::", "*")
+
+    @staticmethod
+    def _request_is_https(req) -> bool:
+        proto = (req.headers.get("X-Forwarded-Proto") or req.scheme or "")
+        return proto.split(",")[0].strip().lower() == "https"
+
+    def _bridge_available(self, host: str, req=None) -> bool:
+        """Whether to emit per-country vless nodes into the subscription.
+
+        Those nodes hardcode port 443 + TLS, so they only work when the
+        panel is reached over HTTPS (preview domain / TLS reverse proxy) or
+        ``sub_server`` is explicitly set. On a bare HTTP deployment emitting
+        them would replace the working http/socks entries with broken ones,
+        so we keep the base subscription there.
+        """
+        if self._is_local_host(host):
+            return False
+        if not (self.cfg.get("sub_server") or "").strip():
+            if req is None or not self._request_is_https(req):
+                return False
+        return bool(self._bridge_uuid())
 
     async def ws_echo(self, req):
         """Diagnostic: verifies WebSocket pass-through on this deployment."""
@@ -3076,7 +3114,7 @@ class Panel:
         egress; without bridge only the generic link is returned.
         """
         server = self._bridge_host(req)
-        if not self._bridge_available(server):
+        if not self._bridge_available(server, req):
             return web.json_response({"error": "vless bridge not deployed"})
         uuid = self._bridge_uuid()
         nodes = [n for n in await self._public_nodes() if self._node_enabled(n[2])]
@@ -3124,7 +3162,7 @@ class Panel:
             http_port=self.cfg.get("sub_http_port") or self.cfg.get("http_port", 8080),
             socks_port=self.cfg.get("sub_socks_port") or self.cfg.get("socks_port", 1080),
         )
-        if self._bridge_available(server):
+        if self._bridge_available(server, req):
             nodes = [n for n in await self._public_nodes()
                      if self._node_enabled(n[2])]
             per_node = []

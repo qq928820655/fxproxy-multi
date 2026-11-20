@@ -43,6 +43,9 @@ DEFAULTS = {
     "panel_password_hash": "",
     "panel_password_salt": "",
     "panel_secret": "",
+    # 内置 vless 服务端的 UUID。留空则优先读 bridge/uuid.txt（与外部 xray
+    # 桥一致），都没有时自动生成并写这里，源码树只读也能用。
+    "vless_uuid": "",
 }
 
 _VALID_STRATEGIES = ("round-robin", "quota", "failover")
