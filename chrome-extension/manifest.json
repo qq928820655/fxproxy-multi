@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
   "name": "fxproxy — FxA Token Extractor",
-  "version": "1.1.0",
-  "description": "Extract Firefox Accounts sessionToken from the signed-in browser and copy a ready-to-paste payload for the fxproxy panel.",
+  "version": "1.2.2",
+  "description": "Extract Firefox Accounts credentials from the signed-in browser in the exact 4 formats the fxproxy panel accepts.",
   "permissions": ["activeTab", "scripting", "clipboardWrite"],
   "host_permissions": [
     "https://accounts.firefox.com/*",
-    "https://accounts.firefox.com.cn/*"
+    "https://accounts.firefox.com.cn/*",
+    "https://api.accounts.firefox.com/*",
+    "https://oauth.accounts.firefox.com/*",
+    "https://api.accounts.firefox.com.cn/*"
   ],
   "action": {
     "default_popup": "popup.html",

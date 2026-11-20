@@ -129,10 +129,18 @@
       } catch (e) { /* malformed, fall through to generic scan */ }
     }
 
-    // 2) generic sweep of both storages + cookies
-    scanStorage(window.localStorage, found);
-    scanStorage(window.sessionStorage, found);
-    scanCookies(found);
+    // 2) 兜底扫描：只在上面一个都没拿到时才做。
+    //
+    // 以前这两步是叠加的，结果一个账号导出 4 个 token：第 1 个来自 accounts
+    // （当前登录，确定有效），后 3 个是 localStorage / sessionStorage / cookie
+    // 里的历史残留。实测这 3 个送进 Mozilla 一律返回
+    // "Invalid authentication token: Missing authentication"。
+    // 混在一起只会让人以为"4 个总有一个能用"，实际是在拿废 token 撞墙。
+    if (!found.length) {
+      scanStorage(window.localStorage, found);
+      scanStorage(window.sessionStorage, found);
+      scanCookies(found);
+    }
 
     // de-dup tokens, keep first-seen order
     var seen = {};

@@ -86,17 +86,30 @@
     }).join("\n") + "\n";
   }
 
+  // 邮箱，每行一个 —— 对应面板「邮箱 + 密码」那一项。密码浏览器里没有，
+  // 需要用户自己补，所以这里只给邮箱（插件能做多少给多少）。
+  function toEmails(payload) {
+    var accts = payload.accounts || [];
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < accts.length; i++) {
+      var m = accts[i].email;
+      if (m && !seen[m]) { seen[m] = 1; out.push(m); }
+    }
+    return out.join("\n") + (out.length ? "\n" : "");
+  }
+
+  // 导出格式只列插件真能生成的三种。refresh_token 不在其中：它必须由面板
+  // 用 sessionToken 去 FxA 换（Hawk 签名 + PKCE），浏览器端做不了，
+  // 硬塞一个槽位只会让人点了报错。
   var FORMATS = {
-    json:     { label: "JSON（含邮箱/uid，推荐）", ext: "json", fn: toJSON },
-    lines:    { label: "每行一个 sessionToken", ext: "txt", fn: toLines },
-    cookie:   { label: "Cookie 头（sessionToken=…）", ext: "txt", fn: toCookieHeader },
-    netscape: { label: "Netscape cookies.txt", ext: "txt", fn: toNetscape },
-    csv:      { label: "逗号分隔（脚本/环境变量）", ext: "txt", fn: toCsv },
-    accounts: { label: "账号+邮箱（人工核对）", ext: "txt", fn: toAccountLines }
+    cookie:  { label: "Cookie 头", ext: "txt", fn: toCookieHeader },
+    session: { label: "sessionToken", ext: "txt", fn: toLines },
+    email:   { label: "邮箱", ext: "txt", fn: toEmails }
   };
 
   function format(payload, kind) {
-    var f = FORMATS[kind] || FORMATS.json;
+    var f = FORMATS[kind] || FORMATS.cookie;
     return f.fn(payload);
   }
 
@@ -109,6 +122,7 @@
     toCookieHeader: toCookieHeader,
     toNetscape: toNetscape,
     toCsv: toCsv,
-    toAccountLines: toAccountLines
+    toAccountLines: toAccountLines,
+    toEmails: toEmails
   };
 });

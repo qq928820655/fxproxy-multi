@@ -58,8 +58,25 @@ fxproxy-chrome-extension 目录。
 使用
 ----
 1. 在住宅 IP 的浏览器里登录 https://accounts.firefox.com
-2. 点插件图标 -> 「提取并复制凭证」
-3. 回到 fxproxy 面板「添加账号 -> Cookie / 插件导出」粘贴
+2. 点插件图标，在「导出格式」里选一种
+3. 点「提取并复制凭证」
+4. 回到 fxproxy 面板「添加账号」，方式选与导出相同的那一项，粘贴
+
+导出格式与面板「方式」的对应
+------------------------------
+Cookie 头（默认）  ->  方式选「Cookie / 插件导出」
+sessionToken       ->  方式选「sessionToken」
+邮箱               ->  方式选「邮箱 + 密码」（密码自己补）
+
+为什么没有 refresh_token：面板第 1 项「直接粘贴 refresh_token」是给
+手上已经有 refresh_token 的人用的。插件只能拿到 sessionToken，
+换成 refresh_token 需要 Hawk 签名 + PKCE 两步，浏览器端做不到，
+硬做只会返回 401 "Invalid authentication token in request signature"。
+所以这一步放在面板里做，插件不重复。
+
+前提：面板所在机器要装了登录依赖，否则会报 No module named 'curl_cffi'。
+    python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple "curl_cffi>=0.7" "pyfxa>=0.8"
+装完重启服务进程。
 """
 
 
