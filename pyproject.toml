@@ -4,14 +4,22 @@ version = "0.4.4"
 description = "Standalone landing proxy over Firefox IP Protection (Mozilla free 50GB/mo)"
 readme = "README.md"
 requires-python = ">=3.10"
-# 运行时代理只需这两个；机房无头环境不必装登录库
+# 面板「Cookie / 插件导出」和「sessionToken」两条入池路径，都要在这里把
+# sessionToken 换成 refresh_token：FxA 的 /oauth/authorization 要 Hawk 签名，
+# curl_cffi 负责 TLS 指纹、pyfxa 负责协议。
+#
+# 这两个包以前挂在 [login] extra 下，默认 pip install 不装，于是任何标准部署
+# 上面板导入都报 "No module named 'curl_cffi'" —— 导入功能形同不存在。
+# 放进主依赖，装什么方式都自带。
 dependencies = [
     "requests>=2.28",
     "aiohttp>=3.9",
+    "pyfxa>=0.8",
+    "curl_cffi>=0.7",
 ]
 
 [project.optional-dependencies]
-# 首次登录/入组（须在住宅 IP 上跑 login）
+# 保留这个 extra 是为了不让已写成 .[login] 的安装脚本失效
 login = ["pyfxa>=0.8", "curl_cffi>=0.7"]
 # 面板"浏览器登录"按钮（驱动真实浏览器）
 browser = ["playwright>=1.40"]

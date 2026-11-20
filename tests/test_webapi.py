@@ -49,6 +49,12 @@ def check(cond, msg):
 
 
 def fake_quota(self):
+    # 真实环境里 sessionToken 当 refresh_token 用会被 FxA 拒（Invalid
+    # authentication token），面板会回退到 bootstrap。桩里用前缀模拟这个区别：
+    # bootstrap 产出的 token 以 "r" 开头，测试里的 sessionToken 是 a/e/c 打头的
+    # 64 位串 —— 否则所有 token 都"可用"，bootstrap 分支永远走不到。
+    if len(self.refresh_token) == 64 and len(set(self.refresh_token)) == 1:
+        raise RuntimeError("Invalid authentication token: Missing authentication")
     self._uid = "uid-" + self.refresh_token[-1]
     return {"uid": self._uid, "max_bytes": 50 * 1024**3,
             "remaining_bytes": 40 * 1024**3, "used_bytes": 10 * 1024**3,
@@ -239,7 +245,7 @@ async def main():
 
             print("[api] cookie 模式导入")
             T1 = "a" * 64
-            R2 = "e" * 64
+            R2 = "e" * 63 + "0"   # 合法 refresh_token（非全同字符，桩才认）
             cookie_payload = {"session_tokens": [T1], "accounts": []}
             r = await cli.post("/api/login", json={"mode": "cookie", "cookie": json.dumps(cookie_payload)})
             d6 = await r.json()
@@ -262,7 +268,9 @@ async def main():
             r = await cli.get("/")
             html = await r.text()
             check("调度策略" in html and "账号池" in html, "面板含多账号 UI")
-            check("cookieData" in html and "Cookie / 插件导出" in html, "面板含 cookie 导入 UI")
+            check("loginMode" in html and 'value="session"' in html
+                  and 'value="cookie"' in html, "面板含四种导入方式")
+            check('id="cookieData"' in html, "面板含 Cookie / 插件导出输入框")
             check("subUrl" in html and "/clash.yaml" in html, "面板含订阅地址 UI")
             check("provUrl" in html and "provider=1" in html,
                   "面板含 mihomo provider 地址 UI")
@@ -444,9 +452,9 @@ async def main():
         async with TestClient(TestServer(app)) as cli:
             r = await cli.post("/api/login", json={"mode": "cookie", "cookie": "   "})
             d0 = await r.json()
-            check("请粘贴凭证文本" in d0.get("error", ""), "空凭证: 友好错误而非崩溃")
+            check("请粘贴凭证" in d0.get("error", ""), "空凭证: 友好错误而非崩溃")
 
-            R = "f" * 64
+            R = "f" * 63 + "0"    # 同上
             r = await cli.post("/api/login", json={
                 "mode": "cookie", "cookie": f"refresh_token={R}"})
             d1 = await r.json()
@@ -460,6 +468,30 @@ async def main():
             s = await r.json()
             check(s["authed"] and s["account_count"] == 1,
                   "空池首次导入: 状态变为已登录")
+
+    print("[api] 插件导出贴进 refresh_token 框（回归）")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "plug.json"
+        cfgpath.write_text(json.dumps({}), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        app = web.Application()
+        app.add_routes([web.post("/api/login", panel.api_login)])
+        async with TestClient(TestServer(app)) as cli:
+            T = "e" * 64
+            # 插件「JSON（含邮箱/uid）」导出的原文，被整段贴在 refresh_token 框里。
+            # 之前会被当 refresh_token 直发 FxA，换来 400 Invalid request parameter。
+            payload = json.dumps({
+                "version": 1, "source": "fxproxy-chrome-extension",
+                "origin": "https://accounts.firefox.com", "extracted_at": "2026-11-19",
+                "accounts": [{"email": "a@b.c", "uid": "u1", "session_token": T}],
+                "session_tokens": [T]}, indent=2)
+            r = await cli.post("/api/login", json={
+                "mode": "token", "refresh_token": payload})
+            d2 = await r.json()
+            check(d2.get("ok") and d2.get("added") == 1,
+                  f"插件 JSON 贴错框：自动改走 cookie 解析并导入（{d2}）")
+            check(panel.pool is not None and ("r" + T[1:]) in panel.pool.tokens,
+                  "插件 JSON 贴错框：bootstrap 出的 token 已入池")
 
     print("[api] 空账号池首次 sessionToken 导入（回归）")
     with tempfile.TemporaryDirectory() as d:

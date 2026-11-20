@@ -211,4 +211,7 @@ def bootstrap(
     except Exception:
         enroll(session_token, tok["access_token"])
         quota = gc.quota()
-    return {"refresh_token": refresh_token, "quota": quota}
+    # uid 一并带出来：调用方（面板入池）要拿它做同账号去重，
+    # 不带就得再发一次请求去问。
+    return {"refresh_token": refresh_token, "quota": quota,
+            "uid": getattr(gc, "_uid", None)}

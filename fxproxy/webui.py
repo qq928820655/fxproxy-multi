@@ -36,6 +36,33 @@ def _updater():
     return updater
 
 
+def _looks_structured_credentials(text: str) -> bool:
+    """整段输入是不是「一份凭证文本」而不是单个 token。
+
+    插件导出的 JSON 一定带 {}，Cookie 头一定带 = 和 ;，列表一定有换行或制表符。
+    单个 token 不带这些字符。只按这组特征判断，不去校验长度或位数 ——
+    否则像测试桩里的短 token 会被误判成结构化文本而改道。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if len(t) > 512:
+        return True
+    return any(ch in t for ch in "{};\t\r\n=")
+
+
+def _login_dep_hint() -> str:
+    """缺登录依赖时给出一条能直接复制执行的命令。
+
+    用当前进程自己的解释器路径，避免用户猜"装到哪个 python 里去了"。
+    国内直连 pypi 常超时，带上清华源。
+    """
+    import sys as _sys
+    return (f'"{_sys.executable}" -m pip install -i '
+            f'https://pypi.tuna.tsinghua.edu.cn/simple '
+            f'"curl_cffi>=0.7" "pyfxa>=0.8"')
+
+
 def _port_free(host: str, port: int) -> bool:
     """端口能不能被 bind。先 connect 探测监听者，再试 bind。
 
@@ -1649,6 +1676,13 @@ class Panel:
         except Exception:
             body = {}
         mode = body.get("mode") or "token"
+        # 贴错框兜底：refresh_token 框里塞进整段插件 JSON / Cookie 头时，
+        # 改道到批量解析。这里只纠正输入的分派，不改任何界面元素。
+        if mode == "token":
+            _rt = (body.get("refresh_token") or "").strip()
+            if _rt and _looks_structured_credentials(_rt):
+                mode = "cookie"
+                body = {**body, "cookie": _rt}
         try:
             if mode == "token":
                 rt = (body.get("refresh_token") or "").strip()
@@ -1657,13 +1691,19 @@ class Panel:
                 gc = GuardianClient(rt)
                 await asyncio.to_thread(gc.quota)  # 先验证可用
                 res = {"refresh_token": rt}
-            elif mode == "cookie":
-                # 插件导出 / Cookie 头 / 多个 token —— 先全部验证，再一次入池。
-                # 关键：首次导入时账号池为空，绝不能提前构造空 TokenPool。
+            elif mode in ("cookie", "session"):
+                # 两种输入本质相同：一份文本里装着若干凭证。
+                #   cookie  —— 插件 JSON / Cookie 头 / token 列表
+                #   session —— 每行一个 sessionToken（插件「sessionToken」那一项）
+                # 以前 session 分支把整段当一个 hex 解，插件导出 4 行拼起来
+                # 260 字符，直接 binascii 报 Odd-length string，完全无法入池。
+                # 现在两者共用解析 + 批量入池。
                 from . import cookieutil
-                raw = body.get("cookie") or ""
+                raw = (body.get("cookie") if mode == "cookie"
+                       else body.get("session_token")) or ""
                 if not str(raw).strip():
-                    return web.json_response({"error": "请粘贴凭证文本"})
+                    return web.json_response(
+                        {"error": "请粘贴凭证文本" if mode == "cookie" else "请粘贴 sessionToken"})
                 try:
                     parsed = cookieutil.parse(raw)
                 except Exception as e:
@@ -1720,7 +1760,7 @@ class Panel:
                     try:
                         fxa = _fxa()
                     except Exception as e:
-                        errors.append(f"登录依赖未安装（需先 pip install '.[login]'）：{e}")
+                        errors.append(f"登录依赖未安装（{e}）：{_login_dep_hint()}")
                     else:
                         for st in parsed["session_tokens"]:
                             try:
@@ -1756,19 +1796,15 @@ class Panel:
                 if errors:
                     out["warnings"] = errors[:5]
                 return web.json_response(out)
-            elif mode in ("browser", "session", "password"):
+            elif mode in ("browser", "password"):
                 try:
-                    fxa = _fxa()  # 只在这三种登录模式才拉起重型依赖
+                    fxa = _fxa()  # 只在这两种登录模式才拉起重型依赖
                 except Exception as e:
                     return web.json_response({
-                        "error": f"登录依赖未安装（需先 pip install '.[login]'）：{e}"})
+                        "error": f"登录依赖未安装（{e}）。执行这条命令后重启服务：\n"
+                                 f"{_login_dep_hint()}"})
                 if mode == "browser":
                     st = await asyncio.to_thread(fxa.browser_login)
-                    res = await asyncio.to_thread(fxa.bootstrap, session_token=st)
-                elif mode == "session":
-                    st = (body.get("session_token") or "").strip()
-                    if not st:
-                        return web.json_response({"error": "请粘贴 sessionToken"})
                     res = await asyncio.to_thread(fxa.bootstrap, session_token=st)
                 else:
                     email = (body.get("email") or "").strip()
