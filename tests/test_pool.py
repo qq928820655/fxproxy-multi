@@ -108,14 +108,13 @@ def test_update_flow():
           "健康检查校验运行版本而非仅端口应答")
     check("runtime.env" in body and "command -v python3" in body,
           "start_all 有解释器回退链")
-    # Windows 上 bash 可能是 WSL 转发 shim，被安全策略拦住时无法做语法检查。
-    # 先探一次 bash 本身能不能跑，不能就跳过（上面的内容断言仍覆盖模板）。
-    bash_ok = subprocess.run(["bash", "-c", "exit 0"], capture_output=True).returncode == 0
-    if bash_ok:
+    # Windows 上的 bash 可能是 WSL 转发 shim，连探测调用都会被安全策略拦掉
+    # 整个进程，所以直接不发起；脚本内容断言在上面已经覆盖。
+    if sys.platform.startswith("win"):
+        print("  skip  Windows 上不跑 bash -n（bash 可能是 WSL shim）")
+    else:
         r = subprocess.run(["bash", "-n", str(script)], capture_output=True)
         check(r.returncode == 0, "生成的脚本 bash 语法通过")
-    else:
-        print("  skip  bash -n 在当前环境不可用（WSL shim 被拦）")
 
 
 def test_pool_round_robin():
