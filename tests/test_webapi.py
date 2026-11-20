@@ -288,6 +288,8 @@ async def main():
             parsed = cookieutil.parse(sample)
             check(parsed["refresh_tokens"] == [hexrt] and parsed["session_tokens"] == [],
                   "导出 JSON 可被导入解析为 refresh_token")
+            check(parsed["accounts"] and parsed["accounts"][0]["email"] == "x@y.z",
+                  "导出 JSON 的 uid/email 跟着 token 一起保留")
 
             print("[api] cookie 模式导入")
             T1 = "a" * 64
@@ -575,6 +577,54 @@ async def main():
             s = await r.json()
             check(s["authed"] and s["account_count"] == 1,
                   "空池首次导入: 状态变为已登录")
+
+    print("[api] A 面板导出 → B 面板 Cookie 导入（换服务器搬账号）")
+    with tempfile.TemporaryDirectory() as d:
+        # profile 接口打桩：真网拉邮箱太慢，这里只验证"导出的邮箱能贴回账号上"
+        _old_email = guardian.GuardianClient.email
+        guardian.GuardianClient.email = (
+            lambda self: f"mail-{self.refresh_token[-2:]}@example.com")
+        try:
+            # 必须是 64 hex：cookieutil 的 _is_token 只认这个长度
+            TA, TB = "a1" * 32, "b2" * 32
+            cfg_a = Path(d) / "a.json"
+            cfg_a.write_text(json.dumps({"refresh_tokens": [TA, TB]}),
+                             encoding="utf-8")
+            panel_a = Panel(str(cfg_a))
+            app_a = web.Application()
+            app_a.add_routes([web.post("/api/accounts/export", panel_a.api_accounts_export)])
+            async with TestClient(TestServer(app_a)) as cli_a:
+                r = await cli_a.post("/api/accounts/export",
+                                     json={"indices": [0, 1], "mode": "cookie"})
+                exp = await r.json()
+            check(not exp.get("error") and len(exp.get("accounts") or []) == 2,
+                  "A 面板: 导出 2 个账号")
+            check(exp["accounts"][0]["email"] == "mail-a1@example.com",
+                  "A 面板: 导出内容带邮箱")
+
+            cfg_b = Path(d) / "b.json"
+            cfg_b.write_text("{}", encoding="utf-8")
+            panel_b = Panel(str(cfg_b))
+            app_b = web.Application()
+            app_b.add_routes([
+                web.post("/api/login", panel_b.api_login),
+                web.get("/api/accounts", panel_b.api_accounts),
+            ])
+            async with TestClient(TestServer(app_b)) as cli_b:
+                r = await cli_b.post("/api/login", json={
+                    "mode": "cookie", "cookie": json.dumps(exp, ensure_ascii=False)})
+                got = await r.json()
+                check(got.get("ok") and got.get("added") == 2,
+                      f"B 面板: 导出的 JSON 粘进 Cookie 框新增 2 个（{got}）")
+                check(sorted(panel_b.pool.tokens) == sorted([TA, TB]),
+                      "B 面板: 两个 refresh_token 都在池中")
+                r = await cli_b.get("/api/accounts")
+                rows = (await r.json()).get("accounts") or []
+                emails = sorted(x["email"] for x in rows if x.get("email"))
+                check(emails == ["mail-a1@example.com", "mail-b2@example.com"],
+                      f"B 面板: 邮箱跟着导入恢复（{emails}）")
+        finally:
+            guardian.GuardianClient.email = _old_email
 
     print("[api] 插件导出贴进 refresh_token 框（回归）")
     with tempfile.TemporaryDirectory() as d:

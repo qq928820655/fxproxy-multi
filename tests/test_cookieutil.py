@@ -11,6 +11,8 @@ T2 = "b" * 64
 T3 = "c" * 64
 R1 = "d" * 64
 T_UPPER = "A" * 64
+D1 = "d1" * 32
+D2 = "e2" * 32
 
 
 def check(cond, label):
@@ -76,6 +78,31 @@ def test_fxs_prefixed():
     check(r["session_tokens"] == ["0" * 64], "fxs_ prefixed: decoded to hex")
 
 
+def test_panel_export_json():
+    """面板「导出账号 → Cookie / 插件导出」的 JSON 必须能被同一个入口读回。
+
+    这是换服务器搬账号的主路径：A 面板导出、B 面板粘进 Cookie 框。
+    以前 accounts[] 里只认 session_token，refresh_token 走递归扫描，
+    uid/email 掉队，导回来邮箱列是空的。
+    """
+    payload = {
+        "format": "fxproxy-accounts",
+        "version": 1,
+        "exported_at": 1795145024,
+        "accounts": [
+            {"uid": "u1", "email": "a@example.com", "refresh_token": D1},
+            {"uid": "u2", "email": "b@example.com", "refresh_token": D2},
+        ],
+    }
+    r = parse(__import__("json").dumps(payload))
+    check(r["refresh_tokens"] == [D1, D2], "panel export: 2 refresh_tokens 按序")
+    check(len(r["accounts"]) == 2, "panel export: 2 accounts")
+    check(r["accounts"][0]["email"] == "a@example.com", "panel export: email 保留")
+    check(r["accounts"][0]["uid"] == "u1", "panel export: uid 保留")
+    check(r["accounts"][1]["refresh_token"] == D2, "panel export: token 与账号配对")
+    check(not r["session_tokens"], "panel export: 不误判成 sessionToken")
+
+
 def test_empty():
     try:
         parse("   ")
@@ -112,7 +139,8 @@ if __name__ == "__main__":
     for fn in [
         test_extension_json, test_cookie_header, test_netscape_cookie_file,
         test_bare_tokens, test_bare_as_refresh, test_json_array,
-        test_fxs_prefixed, test_empty, test_all_plugin_formats,
+        test_fxs_prefixed, test_panel_export_json, test_empty,
+        test_all_plugin_formats,
     ]:
         print(f"[{fn.__name__}]")
         fn()

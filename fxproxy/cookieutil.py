@@ -117,6 +117,10 @@ def parse(raw: str, *, bare_as: str = "session_token") -> dict:
 
     ``bare_as`` decides where a bare 64-hex token goes when there is no field
     name to classify it: "session_token" (default) or "refresh_token".
+
+    ``accounts`` entries keep uid/email paired with their token, whichever kind
+    they carry: ``{"uid", "email", "session_token"}`` for plugin exports,
+    ``{"uid", "email", "refresh_token"}`` for the panel's own export.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -136,17 +140,28 @@ def parse(raw: str, *, bare_as: str = "session_token") -> dict:
             parsed = None
 
     if isinstance(parsed, dict):
-        # Extension accounts carry email/uid — keep them paired with the token.
+        # accounts 数组：插件导出带 session_token，面板「导出账号」带 refresh_token。
+        # 两种都要连 uid/email 一起收 —— 只收 token 的话导出再导入邮箱就丢了，
+        # 面板列表里那列会是空的。
         for rec in parsed.get("accounts") or []:
             if not isinstance(rec, dict):
                 continue
+            uid = rec.get("uid") or ""
+            email = rec.get("email") or ""
             st = rec.get("session_token") or rec.get("sessionToken")
+            rt = rec.get("refresh_token") or rec.get("refreshToken")
             if st and _is_token(st):
                 accounts.append({
-                    "uid": rec.get("uid") or "",
-                    "email": rec.get("email") or "",
+                    "uid": uid, "email": email,
                     "session_token": _norm(st),
                 })
+            elif rt and _is_token(rt):
+                accounts.append({
+                    "uid": uid, "email": email,
+                    "refresh_token": _norm(rt),
+                })
+                refresh.append(_norm(rt))
+                detected.append("json:accounts[].refresh_token")
         # explicit fields first, then a generic sweep for renamed keys
         for key in ("session_token", "sessionToken"):
             v = parsed.get(key)
@@ -193,7 +208,8 @@ def parse(raw: str, *, bare_as: str = "session_token") -> dict:
     refresh = _dedup(refresh)
 
     # Keep account tokens consistent with the de-duplicated session list.
-    account_tokens = {a["session_token"] for a in accounts}
+    # accounts 里也可能只有 refresh_token（面板导出），那种不进 sessions。
+    account_tokens = {a["session_token"] for a in accounts if a.get("session_token")}
     sessions = _dedup(sessions + sorted(account_tokens - set(sessions)))
 
     if not sessions and not refresh:

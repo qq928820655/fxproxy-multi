@@ -1989,6 +1989,25 @@ class Panel:
                 uid_map = self.pool.uid_index() if self.pool is not None else {}
                 new_tokens: list[str] = []
                 added, skipped, updated, errors = 0, 0, 0, []
+                # 导出文件里带的邮箱：入池后直接贴到账号上，省一次 profile 请求，
+                # 也让面板列表立刻显示邮箱而不是等第一次额度刷新。
+                email_of: dict[str, str] = {}
+                for _a in parsed["accounts"]:
+                    _tok = _a.get("session_token") or _a.get("refresh_token")
+                    if _tok and _a.get("email"):
+                        email_of[_tok] = _a["email"]
+
+                def _apply_email(rt):
+                    email = email_of.get(rt)
+                    if not email or self.pool is None:
+                        return
+                    try:
+                        idx = self.pool.tokens.index(rt)
+                    except ValueError:
+                        return
+                    c = self.pool.clients[idx]
+                    if not getattr(c, "_email", None):
+                        c._email = email
 
                 def _verify(rt):
                     # 在 worker 线程内同步验证，返回账号 uid（失败抛异常）
@@ -2060,6 +2079,8 @@ class Panel:
                             self.pool.add(rt)
                         except ValueError:
                             pass  # 并发下重复：幂等忽略
+                for rt in new_tokens:
+                    _apply_email(rt)
                 await asyncio.to_thread(self._persist)
                 out = {"ok": True, "added": added, "skipped": skipped,
                        "updated": updated, "account_count": len(self.pool.clients)}
