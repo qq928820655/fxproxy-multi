@@ -345,6 +345,55 @@ def test_fpn_401_selfheal_and_ua():
           "重试携带刷新后的 bearer")
 
 
+def test_proxy_splice_traffic():
+    print("[traffic] 8080/1080 代理流量回调计数")
+    import asyncio
+    from fxproxy.proxyserver import ProxyServer, NodePicker
+
+    class _C:
+        def nodes_by_country(self):
+            return {"US": {"name": "US", "nodes": [("a", 1)]}}
+
+    srv = ProxyServer(GuardianClient("t"), NodePicker(_C()))
+    got = []
+    srv._on_traffic = lambda up, down: got.append((up, down))
+
+    class _Block:
+        def __init__(self, first):
+            self.first = first
+            self.done = False
+        async def read(self, n):
+            if not self.done:
+                self.done = True
+                return self.first
+            await asyncio.Event().wait()  # 永不返回，靠 sibling 结束被 cancel
+
+    class _EOF:
+        def __init__(self, first):
+            self.first = first
+            self.done = False
+        async def read(self, n):
+            if not self.done:
+                self.done = True
+                return self.first
+            return b""
+
+    class _W:
+        def write(self, b):
+            pass
+        async def drain(self):
+            pass
+        def close(self):
+            pass
+
+    async def run():
+        await srv._splice(_Block(b"a" * 100), _W(), _EOF(b"b" * 300), _W(),
+                          leftover=b"x" * 10)
+
+    asyncio.run(run())
+    check(got == [(110, 300)], "up=leftover+客户端字节, down=服务端字节")
+
+
 def test_node_picker_exclude():
     print("[nodes] 禁用节点从选择池排除")
     from fxproxy.proxyserver import NodePicker
@@ -375,6 +424,7 @@ if __name__ == "__main__":
     test_force_ipv4_egress()
     test_runtime_user_agent()
     test_fpn_401_selfheal_and_ua()
+    test_proxy_splice_traffic()
     test_node_picker_exclude()
     test_pool_round_robin()
     test_pool_failover()

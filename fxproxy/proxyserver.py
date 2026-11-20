@@ -136,6 +136,9 @@ class ProxyServer:
         self.failover = max(1, failover)
         self.force_ipv4_egress = bool(force_ipv4_egress)
         self._ssl = ssl.create_default_context()
+        # 每完成一条连接回调 (up, down) 字节数；面板用它把 8080/1080 的
+        # 外部流量并入本地统计。为 None 时不统计（如测速临时实例）。
+        self._on_traffic = None
 
     # ---- egress address policy ---------------------------------------
     @staticmethod
@@ -250,7 +253,8 @@ class ProxyServer:
         raise ConnectionError(f"{tried_nodes} 次尝试全部失败: {last_err!r}")
 
     @staticmethod
-    async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                    counter=None, key=None):
         # OSError covers ConnectionError and ssl.SSLError (incl. the benign
         # APPLICATION_DATA_AFTER_CLOSE_NOTIFY seen when a peer tears the TLS
         # session down mid-transfer); CancelledError fires when the sibling
@@ -262,6 +266,8 @@ class ProxyServer:
                     break
                 writer.write(data)
                 await writer.drain()
+                if counter is not None:
+                    counter[key] += len(data)
         except (OSError, asyncio.IncompleteReadError, asyncio.CancelledError):
             pass
         finally:
@@ -271,11 +277,12 @@ class ProxyServer:
                 pass
 
     async def _splice(self, c_reader, c_writer, u_reader, u_writer, leftover=b""):
+        stat = {"up": len(leftover), "down": 0}
         if leftover:
             c_writer.write(leftover)
             await c_writer.drain()
-        t1 = asyncio.ensure_future(self._pipe(c_reader, u_writer))
-        t2 = asyncio.ensure_future(self._pipe(u_reader, c_writer))
+        t1 = asyncio.ensure_future(self._pipe(c_reader, u_writer, stat, "up"))
+        t2 = asyncio.ensure_future(self._pipe(u_reader, c_writer, stat, "down"))
         try:
             _, pending = await asyncio.wait(
                 {t1, t2}, return_when=asyncio.FIRST_COMPLETED
@@ -295,6 +302,11 @@ class ProxyServer:
                 t.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
+            if self._on_traffic is not None and (stat["up"] or stat["down"]):
+                try:
+                    self._on_traffic(stat["up"], stat["down"])
+                except Exception:
+                    pass
 
     # ---- HTTP proxy ---------------------------------------------------
     async def _handle_http(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):

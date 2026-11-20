@@ -1731,6 +1731,7 @@ class Panel:
                 failover=self.cfg.get("failover", 3),
                 force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
             )
+            srv._on_traffic = self._add_traffic
             await srv.start()
             self.srv = srv
             return web.json_response({"ok": True, "account_count": len(self.pool.clients),
@@ -1883,6 +1884,7 @@ class Panel:
                 failover=self.cfg.get("failover", 3),
                 force_ipv4_egress=self.cfg.get("force_ipv4_egress", False),
             )
+            srv._on_traffic = self._add_traffic
             await srv.start()
             self.srv = srv
         except Exception as e:
