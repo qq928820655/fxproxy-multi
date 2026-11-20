@@ -875,11 +875,16 @@ async function loadAccounts(){
       } else if(a.max_bytes){
         rem = "月度 "+fmt(a.max_bytes)+" · 用量待取";
       } else { rem = (a.error||"—").slice(0,32); }
+      // 本地计量：这条账号实际承载了多少转发字节（与官方额度分开显示）
+      const lu = a.local_used_bytes||0;
+      const localTxt = lu
+        ? `<div class="muted" style="font-size:11px;margin-top:4px">本地 ${fmt(a.local_down_bytes||0)}↓ / ${fmt(a.local_up_bytes||0)}↑</div>`
+        : "";
       // data-l 给窄屏用：表头隐藏后靠它显示字段名
       return `<tr><td class="sel" data-l="选择"><input type="checkbox" class="acctChk" data-i="${i}" ${SELECTED.has(i)?'checked':''}></td>`+
         `<td class="mail" colspan="2" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
         <td data-l="uid">${a.uid||"—"}</td><td data-l="状态">${st}</td>
-        <td class="quota" data-l="已用 / 月度">${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
+        <td class="quota" data-l="已用 / 月度">${rem}<div class="bar"><i style="width:${pct}%"></i></div>${localTxt}</td>
         <td data-l="操作"><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
     });
     $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="7" class="muted">无账号</td></tr>';
@@ -1200,11 +1205,21 @@ class Panel:
     def _load_traffic(self) -> dict:
         try:
             d = json.loads(self._traffic_path().read_text())
+            accts = d.get("accounts")
+            if not isinstance(accts, dict):
+                accts = {}
+            clean = {}
+            for k, v in accts.items():
+                if isinstance(v, dict):
+                    clean[str(k)] = {"up": int(v.get("up", 0)),
+                                     "down": int(v.get("down", 0))}
             return {"up": int(d.get("up", 0)), "down": int(d.get("down", 0)),
                     "ff_seen": int(d.get("ff_seen", 0)),
-                    "offset": int(d.get("offset", 0))}
+                    "offset": int(d.get("offset", 0)),
+                    "accounts": clean}
         except Exception:
-            return {"up": 0, "down": 0, "ff_seen": 0, "offset": 0}
+            return {"up": 0, "down": 0, "ff_seen": 0, "offset": 0,
+                    "accounts": {}}
 
     def _save_traffic(self):
         try:
@@ -1216,11 +1231,29 @@ class Panel:
         except Exception:
             pass
 
-    def _add_traffic(self, up: int, down: int):
+    @staticmethod
+    def _acct_key(gc) -> str:
+        """Stable per-account key for local traffic attribution.
+
+        Hashes the refresh_token so traffic.json doesn't store raw credentials;
+        the panel derives the same key for each client when rendering rows."""
+        import hashlib
+        tok = getattr(gc, "refresh_token", "") if gc is not None else ""
+        return hashlib.sha1(tok.encode()).hexdigest()[:16] if tok else ""
+
+    def _add_traffic(self, up: int, down: int, gc=None):
         if not up and not down:
             return
         self._traffic["up"] += int(up)
         self._traffic["down"] += int(down)
+        key = self._acct_key(gc) if gc is not None else ""
+        if key:
+            accts = self._traffic.setdefault("accounts", {})
+            slot = accts.get(key)
+            if slot is None:
+                slot = accts[key] = {"up": 0, "down": 0}
+            slot["up"] += int(up)
+            slot["down"] += int(down)
         now = time.monotonic()
         # 节流落盘：最多每 10 秒写一次，避免每条连接都碰磁盘
         if now - self._traffic_flush_at >= 10:
@@ -1477,11 +1510,17 @@ class Panel:
             return []
         snaps = self.pool.quota_snapshot()
         now = _t.monotonic()
+        accts = self._traffic.get("accounts") or {}
         rows = []
         for i, (c, q) in enumerate(zip(self.pool.clients, snaps)):
             row = dict(q)
             row["cooling"] = self.pool._cool_until.get(i, 0) > now
             row["email"] = c.email() if q.get("ok") else None
+            # 本地计量按账号归因：哪条连接用了哪个账号，就记到该账号头上
+            slot = accts.get(self._acct_key(c), {})
+            row["local_up_bytes"] = int(slot.get("up", 0))
+            row["local_down_bytes"] = int(slot.get("down", 0))
+            row["local_used_bytes"] = row["local_up_bytes"] + row["local_down_bytes"]
             rows.append(row)
         return rows
 
@@ -2277,7 +2316,7 @@ class Panel:
         real egress IP (what target websites actually see)."""
         async with sem:
             try:
-                reader, writer, _ = await asyncio.wait_for(
+                reader, writer, _, gc = await asyncio.wait_for(
                     self._vless_open_tunnel(host, port, "api.ipify.org", 80),
                     timeout=30,
                 )
@@ -2287,7 +2326,7 @@ class Panel:
                 await writer.drain()
                 data = await asyncio.wait_for(reader.read(4096), timeout=10)
                 # 出口探测也走隧道，收发字节计入本地统计（每节点约几十字节）
-                self._add_traffic(len(req), len(data))
+                self._add_traffic(len(req), len(data), gc)
                 writer.close()
                 body = (data.split(b"\r\n\r\n", 1)[1]
                         if b"\r\n\r\n" in data else b"").decode(errors="replace").strip()
@@ -2358,7 +2397,7 @@ class Panel:
                 reader, writer, leftover, _ = await bench._connect_one(
                     node_host, node_port, target_host, target_port, jwt, conn=conn
                 )
-                return reader, writer, leftover
+                return reader, writer, leftover, gc
             except Exception as e:
                 last_err = e
                 if "401" in str(e) or "403" in str(e):
@@ -2373,7 +2412,7 @@ class Panel:
                         reader, writer, leftover, _ = await bench._connect_one(
                             node_host, node_port, target_host, target_port, jwt
                         )
-                        return reader, writer, leftover
+                        return reader, writer, leftover, gc
                     except Exception as e2:
                         last_err = e2
         raise ConnectionError(f"tunnel via {node_host} failed: {last_err!r}")
@@ -2452,7 +2491,7 @@ class Panel:
                 await self._serve_mux_session(ws, buf, node_host, node_port)
                 return ws
 
-            reader, writer, leftover = await self._vless_open_tunnel(
+            reader, writer, leftover, gc = await self._vless_open_tunnel(
                 node_host, node_port, target, port
             )
         except Exception as _e:
@@ -2525,7 +2564,7 @@ class Panel:
                 await ws.close()
             except Exception:
                 pass
-            self._add_traffic(_stat["up"], _stat["down"])
+            self._add_traffic(_stat["up"], _stat["down"], gc)
         return ws
 
     async def _serve_mux_session(self, ws, buf, node_host, node_port):
@@ -2540,6 +2579,7 @@ class Panel:
 
         async def on_stream(reader, writer):
             up_w = None
+            gc = None
             meter = {"up": 0, "down": 0}
             try:
                 atyp = (await reader.readexactly(1))[0]
@@ -2554,7 +2594,7 @@ class Panel:
                 else:
                     return
                 tp = int.from_bytes(await reader.readexactly(2), "big")
-                r, up_w, leftover = await self._vless_open_tunnel(
+                r, up_w, leftover, gc = await self._vless_open_tunnel(
                     node_host, node_port, th, tp)
                 if leftover:
                     writer.write(leftover)
@@ -2606,7 +2646,7 @@ class Panel:
                         up_w.close()
                     except Exception:
                         pass
-                self._add_traffic(meter["up"], meter["down"])
+                self._add_traffic(meter["up"], meter["down"], gc)
 
         try:
             server = await asyncio.start_server(on_stream, "127.0.0.1", 0)

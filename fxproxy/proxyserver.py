@@ -240,7 +240,7 @@ class ProxyServer:
                     )
                     # 出口已确立：记录实际使用的节点，供面板显示国家
                     self.picker.last_host = node_host
-                    return conn
+                    return (*conn, gc)
                 except AccountAuthFailure as e:
                     # 账号级失败：冷却账号，不再试这个账号的其它节点
                     last_err = e
@@ -276,7 +276,8 @@ class ProxyServer:
             except Exception:
                 pass
 
-    async def _splice(self, c_reader, c_writer, u_reader, u_writer, leftover=b""):
+    async def _splice(self, c_reader, c_writer, u_reader, u_writer,
+                      leftover=b"", gc=None):
         stat = {"up": len(leftover), "down": 0}
         if leftover:
             c_writer.write(leftover)
@@ -304,7 +305,7 @@ class ProxyServer:
                 await asyncio.gather(*pending, return_exceptions=True)
             if self._on_traffic is not None and (stat["up"] or stat["down"]):
                 try:
-                    self._on_traffic(stat["up"], stat["down"])
+                    self._on_traffic(stat["up"], stat["down"], gc)
                 except Exception:
                     pass
 
@@ -364,14 +365,14 @@ class ProxyServer:
     async def _connect_and_splice(
         self, host, port, c_reader, c_writer, client_ack, initial=b""
     ):
-        u_reader, u_writer, leftover, node = await self._open_tunnel(host, port)
+        u_reader, u_writer, leftover, node, gc = await self._open_tunnel(host, port)
         if client_ack:
             c_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await c_writer.drain()
         if initial:
             u_writer.write(initial)
             await u_writer.drain()
-        await self._splice(c_reader, c_writer, u_reader, u_writer, leftover)
+        await self._splice(c_reader, c_writer, u_reader, u_writer, leftover, gc)
 
     # ---- SOCKS5 proxy -------------------------------------------------
     async def _handle_socks(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -409,7 +410,7 @@ class ProxyServer:
             port = struct.unpack("!H", await reader.readexactly(2))[0]
 
             try:
-                u_reader, u_writer, leftover, node = await self._open_tunnel(host, port)
+                u_reader, u_writer, leftover, node, gc = await self._open_tunnel(host, port)
             except Exception as e:
                 writer.write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
                 await writer.drain()
@@ -419,7 +420,7 @@ class ProxyServer:
             # success reply
             writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
             await writer.drain()
-            await self._splice(reader, writer, u_reader, u_writer, leftover)
+            await self._splice(reader, writer, u_reader, u_writer, leftover, gc)
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         except Exception as e:
