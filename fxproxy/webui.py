@@ -877,7 +877,7 @@ async function loadAccounts(){
       } else { rem = (a.error||"—").slice(0,32); }
       // data-l 给窄屏用：表头隐藏后靠它显示字段名
       return `<tr><td class="sel" data-l="选择"><input type="checkbox" class="acctChk" data-i="${i}" ${SELECTED.has(i)?'checked':''}></td>`+
-        `<td class="mail" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
+        `<td class="mail" colspan="2" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
         <td data-l="uid">${a.uid||"—"}</td><td data-l="状态">${st}</td>
         <td class="quota" data-l="已用 / 月度">${rem}<div class="bar"><i style="width:${pct}%"></i></div></td>
         <td data-l="操作"><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
