@@ -89,9 +89,16 @@ def test_update_flow():
     check(p._update_pid is None, "过期 pid 被清掉")
 
     d = Path(tempfile.mkdtemp())
-    script, kind = updater.build_script(
-        "release", d, d / "pkg.tar.gz", d / ".run", "9.9.9", "0.5.6",
-        d / "cfg.json", "0.0.0.0", 8765, mode="pid")
+    # build_script 首个参数现在是 kind，模板按平台选。这里固定按 linux 生成
+    # bash 脚本来校验模板内容，避免 Windows 上落到 ps1 分支。
+    _platform = updater.sys.platform
+    updater.sys.platform = "linux"
+    try:
+        script, kind = updater.build_script(
+            "bash", d, d / "pkg.tar.gz", d / ".run", "9.9.9", "0.5.6",
+            d / "cfg.json", "0.0.0.0", 8765, mode="pid")
+    finally:
+        updater.sys.platform = _platform
     body = script.read_text(encoding="utf-8")
     check(kind == "bash", "生成 bash 脚本")
     check("port_busy()" in body and "fuser -k" in body,
@@ -101,8 +108,14 @@ def test_update_flow():
           "健康检查校验运行版本而非仅端口应答")
     check("runtime.env" in body and "command -v python3" in body,
           "start_all 有解释器回退链")
-    r = subprocess.run(["bash", "-n", str(script)], capture_output=True)
-    check(r.returncode == 0, "生成的脚本 bash 语法通过")
+    # Windows 上 bash 可能是 WSL 转发 shim，被安全策略拦住时无法做语法检查。
+    # 先探一次 bash 本身能不能跑，不能就跳过（上面的内容断言仍覆盖模板）。
+    bash_ok = subprocess.run(["bash", "-c", "exit 0"], capture_output=True).returncode == 0
+    if bash_ok:
+        r = subprocess.run(["bash", "-n", str(script)], capture_output=True)
+        check(r.returncode == 0, "生成的脚本 bash 语法通过")
+    else:
+        print("  skip  bash -n 在当前环境不可用（WSL shim 被拦）")
 
 
 def test_pool_round_robin():

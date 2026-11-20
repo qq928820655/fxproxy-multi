@@ -1392,7 +1392,9 @@ class Panel:
             "web_port": self.web_port,
             "version": _updater().VERSION,
             "platform": _updater().platform_tag(),
-            "updating": bool(self._updating),
+            # 升级脚本存活期间也算更新中：spawn 返回后 _updating 就复位了，
+            # 只看它会让状态页在真正升级时显示"空闲"。
+            "updating": self._update_busy(),
         })
 
     # ---- 版本 / 一键更新 ----

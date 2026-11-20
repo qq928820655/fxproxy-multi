@@ -212,7 +212,11 @@ def test_build_script():
             check(kind == "bash", "Linux/macOS 用 bash 运行器")
             check(script.is_file(), "脚本已落盘")
             body = script.read_text(encoding="utf-8")
-            check("__" not in body.replace("__pycache__", ""), "没有残留占位符")
+            # 只查已知的模板占位符：脚本里正常的 __pycache__ / __name__ 不该算残留
+            check(not any(p in body for p in (
+                "__LOG__", "__PKG__", "__DEST__", "__RUN__", "__CFG__",
+                "__WANT__", "__FROM__", "__WH__", "__WP__", "__MODE__", "__BRANCH__")),
+                "没有残留占位符")
             check("tar xzf" in body and "--strip-components=1" in body,
                   "用 tar 覆盖并拆顶层目录")
             check("config.json" in body, "脚本知道 config 路径")
@@ -250,7 +254,11 @@ def test_build_script():
             check("Start-Process" in body, "重新拉起面板")
             check("config.json" in body and "'.venv'" in body.replace('".venv"', "'.venv'"),
                   "覆盖时跳过 config.json 与 .venv")
-            check("__" not in body.replace("__pycache__", ""), "没有残留占位符")
+            # 只查已知的模板占位符：脚本里正常的 __pycache__ / __name__ 不该算残留
+            check(not any(p in body for p in (
+                "__LOG__", "__PKG__", "__DEST__", "__RUN__", "__CFG__",
+                "__WANT__", "__FROM__", "__WH__", "__WP__", "__MODE__", "__BRANCH__")),
+                "没有残留占位符")
     finally:
         u.sys.platform = real
 
@@ -541,7 +549,8 @@ async def test_panel_api():
         calls["run"] += 1
         return {"ok": True, "from": u.VERSION, "to": "0.9.9",
                 "asset": "fxproxy-0.9.9-linux.tar.gz", "bytes": 4096,
-                "script": "/tmp/x.sh", "runner": "bash", "pid": 4242,
+                # 新逻辑按 pid 判存活：用当前测试进程，才是真正的"更新中"
+                "script": "/tmp/x.sh", "runner": "bash", "pid": os.getpid(),
                 "log": "/tmp/update.log"}
 
     u.fetch_latest = fake_fetch
@@ -578,7 +587,8 @@ async def test_panel_api():
                 r = await cli.post("/api/update", json={"confirm": True})
                 body = await r.json()
                 check(r.status == 200 and body.get("ok"), "confirm 后走更新流程")
-                check(body["to"] == "0.9.9" and body["pid"] == 4242, "返回目标版本与 pid")
+                check(body["to"] == "0.9.9" and body["pid"] == os.getpid(),
+                      "返回目标版本与 pid")
                 check(calls["run"] == 1, "只调一次 run_update")
 
                 # 再点一次：已在更新中
@@ -592,6 +602,10 @@ async def test_panel_api():
                 st = await (await cli.get("/api/state")).json()
                 check(st["version"] == u.VERSION, "state 带版本号")
                 check(st.get("updating") is True, "state 带更新标记")
+                # fake run_update 没起真升级脚本，手动放开，避免影响后续用例
+                panel._updating = False
+                panel._update_pid = None
+                panel._update_until = 0
 
             # 已是最新
             async def fake_fetch_same(*a, **kw):
