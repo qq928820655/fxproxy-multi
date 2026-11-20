@@ -2123,6 +2123,9 @@ class Panel:
                     nonlocal added, skipped, updated
                     if rt in existing or rt in new_tokens:
                         skipped += 1
+                        # 重复导入同一份 JSON 时也要补邮箱/uid：区域受限下
+                        # 这些字段没法从 profile/status 重新拿回来。
+                        _apply_meta(rt)
                         return
                     try:
                         uid = await asyncio.to_thread(_verify, rt) or uid_of.get(rt)

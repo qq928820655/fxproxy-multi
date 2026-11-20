@@ -735,6 +735,17 @@ async def main():
                 row = panel._account_rows()[0]
                 check(row.get("email") == "x@example.com", "451 下邮箱仍显示")
                 check(row.get("uid") == "9802445", "451 下 uid 仍显示")
+                # 同一份 JSON 再导一次：token 被跳过，但邮箱/uid 要补上
+                r2 = await cli.post("/api/login", json={
+                    "mode": "cookie",
+                    "cookie": json.dumps({
+                        "format": "fxproxy-accounts", "version": 1,
+                        "accounts": [{"uid": 9802445, "email": "x@example.com",
+                                      "refresh_token": tok}]})})
+                d2 = await r2.json()
+                check(d2.get("skipped") == 1, "重复导入同一 token 幂等")
+                check(panel._account_rows()[0].get("email") == "x@example.com",
+                      "重复导入也补回邮箱")
         finally:
             guardian.GuardianClient.quota = orig_quota
 
