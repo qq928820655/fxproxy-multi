@@ -466,6 +466,7 @@ PAGE = r"""<!doctype html>
           </svg>
         </button>
       </div>
+      <div id="subWarn" class="muted" style="display:none;color:#f0b400;font-size:12px;margin-top:6px;"></div>
     </div>
     <div class="suburl">
       <label for="provUrl">mihomo provider</label>
@@ -770,6 +771,12 @@ async function loadState(){
   if (ae !== $("socksPort")) $("socksPort").value = s.socks_port;
   $("subUrl").textContent = location.origin + "/clash.yaml";
   $("provUrl").textContent = location.origin + "/clash.yaml?provider=1";
+  const _localHosts = ["127.0.0.1","localhost","::1","0.0.0.0"];
+  const _sw = $("subWarn");
+  if(_localHosts.includes(location.hostname)){
+    _sw.style.display = "";
+    _sw.textContent = "当前通过本机地址访问：订阅里的 server 会是 127.0.0.1，跨机不可用。请改用预览域名/公网地址打开面板后再复制订阅（才会生成国家节点）。";
+  } else { _sw.style.display = "none"; }
   CURRENT_NODE = s.node || "";
   let egress;
   if (s.node) egress = "出口：固定节点 "+s.node+(s.egress_country?(" ("+s.egress_country+")"):"");
