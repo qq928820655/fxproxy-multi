@@ -26,16 +26,17 @@ print("[userscript] 元数据")
 m = re.search(r"// @version\s+(\S+)", src)
 check(m is not None, "有 @version")
 ver = m.group(1) if m else "0"
-check(tuple(int(x) for x in ver.split(".")) >= (1, 1, 1), f"版本 >= 1.1.1（当前 {ver}）")
+check(tuple(int(x) for x in ver.split(".")) >= (1, 2, 0), f"版本 >= 1.2.0（当前 {ver}）")
 
 print("\n[userscript] 导出格式与面板对齐")
 block = re.search(r"var FORMATS = \{(.+?)\n  \};", src, re.S)
 check(block is not None, "找到 FORMATS 定义")
 keys = re.findall(r"^\s{4}(\w+): \{", block.group(1), re.M) if block else []
-check(keys == ["session", "email"], f"恰好 session/email 两项（实际 {keys}）")
-check("FORMATS.json" not in src and "FORMATS.cookie" not in src,
+check(keys == ["cookie", "session", "email"],
+      f"恰好 cookie/session/email 三项，与扩展一致（实际 {keys}）")
+check("FORMATS.json" not in src and "FORMATS.lines" not in src,
       "没有指向已删格式的引用")
-check('"sessionToken=" +' not in src, "不再拼 Cookie 头前缀")
+check('"sessionToken=" +' in src, "Cookie 头拼 sessionToken= 前缀")
 
 print("\n[userscript] 采集不与兜底叠加")
 collect = re.search(r"function collect\(\) \{(.+?)\n  \}", src, re.S)
@@ -52,6 +53,7 @@ if body:
 
 print("\n[userscript] 推送走面板对应入口")
 check('mode: "session"' in src and "session_token:" in src, "session 格式推 mode=session")
+check('mode: "cookie"' in src, "cookie 格式推 mode=cookie")
 check("function pushBody" in src, "推送按格式分派")
 check('return null;' in src and "没有 token" in src, "email 格式拒绝推送并说明原因")
 

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         fxproxy 凭证提取（Firefox IP Protection）
 // @namespace    fxproxy
-// @version      1.1.1
-// @description  在 accounts.firefox.com 上提取 sessionToken，导出或一键推送到本地 fxproxy 面板
+// @version      1.2.0
+// @description  在 accounts.firefox.com 上提取 sessionToken，按三种格式导出或一键推送到本地 fxproxy 面板
 // @author       fxproxy
 // @match        https://accounts.firefox.com/*
 // @match        https://accounts.firefox.com.cn/*
@@ -190,6 +190,14 @@
   //
   // 没有 refresh_token：FxA 的 /oauth/token 要 Hawk 签名，浏览器端换不出来。
   var FORMATS = {
+    // 与 chrome-extension/formats.js 的 FORMATS 逐项对应，改一处要同步另一处
+    cookie: {
+      label: "Cookie 头（默认，最省事）",
+      ext: "txt",
+      fn: function (p) {
+        return p.session_tokens.map(function (t) { return "sessionToken=" + t; }).join("; ") + "\n";
+      }
+    },
     session: {
       label: "sessionToken（每行一个）",
       ext: "txt",
@@ -293,7 +301,7 @@
     $fmt.appendChild(o);
   });
   // 旧版本存过 json / cookie / lines 这些已删掉的 key，读回来要落回默认
-  var savedFmt = GM_getValue("fmt", "session");
+  var savedFmt = GM_getValue("fmt", "cookie");
   $fmt.value = FORMATS[savedFmt] ? savedFmt : "session";
   $push.disabled = ($fmt.value === "email");
   $panel.value = panelUrl;
@@ -346,7 +354,7 @@
 
   function textOf(kind) {
     var p = lastPayload || collect();
-    var f = FORMATS[kind] || FORMATS.session;
+    var f = FORMATS[kind] || FORMATS.cookie;
     return { text: f.fn(p), fmt: f };
   }
 
@@ -422,6 +430,7 @@
   function pushBody(kind) {
     var c = textOf(kind);
     if (kind === "session") return { mode: "session", session_token: c.text };
+    if (kind === "cookie") return { mode: "cookie", cookie: c.text };
     return null;
   }
 
