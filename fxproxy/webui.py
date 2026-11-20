@@ -405,13 +405,13 @@ PAGE = r"""<!doctype html>
     <div class="row">
       <label>方式</label>
       <select id="loginMode">
-        <option value="token">直接粘贴 refresh_token（最稳）</option>
         <option value="cookie">Cookie / 插件导出（推荐）</option>
+        <option value="token">直接粘贴 refresh_token（最稳）</option>
         <option value="password">邮箱 + 密码</option>
         <option value="session">sessionToken</option>
       </select>
     </div>
-    <div id="rtFields" class="row" style="margin-top:10px;">
+    <div id="rtFields" class="row" style="margin-top:10px; display:none;">
       <input id="refreshToken" placeholder="粘贴 refresh_token (hex)" style="width:100%;">
     </div>
     <div id="pwFields" class="row" style="margin-top:10px; display:none;">
@@ -421,7 +421,7 @@ PAGE = r"""<!doctype html>
     <div id="stFields" class="row" style="margin-top:10px; display:none;">
       <input id="sessionToken" placeholder="粘贴 sessionToken (hex)" style="width:100%;">
     </div>
-    <div id="ckFields" style="margin-top:10px; display:none;">
+    <div id="ckFields" style="margin-top:10px;">
       <textarea id="cookieData" rows="5" style="width:100%;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px;" placeholder="粘贴 Chrome 插件导出的 JSON，或 sessionToken=xxx Cookie 头，可一次贴多个"></textarea>
       <div class="muted" style="font-size:12px;margin-top:4px;">住宅 IP 登录 → 点插件「提取并复制」→ 粘贴到这里。支持插件 JSON / Cookie 头 / 多个 token，批量自动入池。</div>
     </div>
@@ -918,6 +918,7 @@ $("loginMode").onchange = () => {
   $("stFields").style.display = m === "session" ? "flex" : "none";
   $("ckFields").style.display = m === "cookie" ? "block" : "none";
 };
+$("loginMode").onchange();
 async function doLogin(body, btn){
   btn.disabled = true; $("loginMsg").textContent = "处理中，请稍候…";
   const r = await fetch("/api/login",{method:"POST",
@@ -1022,7 +1023,7 @@ async function verInit(){
     const r = await fetch("/api/version"); const d = await r.json();
     VER.platform = d.platform_label || d.platform || "";
     if(d.update_proxy) $("ghProxy").value = d.update_proxy;
-    $("verNow").textContent = "v"+d.current;
+    $("verNow").textContent = "v"+d.current + (d.commit ? (" · "+d.commit) : "");
     const kind = (d.install && d.install.kind) || "unknown";
     if(kind === "unknown"){
       $("verMsg").textContent = "当前是 pip 装进 site-packages 的形态，面板没法就地替换代码；用安装脚本或发行包重装一次之后这个按钮才可用。";
@@ -1155,6 +1156,9 @@ class Panel:
     def __init__(self, config_path=None, web_host="127.0.0.1", web_port=8765):
         self.config_path = config_path
         self.cfg = cfgmod.load(config_path)
+        # 当前代码的 git 提交（非 git 安装时为空），面板显示版本时一并给出，
+        # 这样即使版本号没变也能确认实际跑的是哪一版。
+        self._commit = self._read_commit()
         # 控制面 UA 必须在建池（创建 requests.Session）之前设置好
         set_default_user_agent(self.cfg.get("runtime_user_agent", ""))
         self.pool = self._make_pool()
@@ -1173,6 +1177,20 @@ class Panel:
         # 到配置同目录的 traffic.json，重启不清零。
         self._traffic = self._load_traffic()
         self._traffic_flush_at = 0.0
+
+    @staticmethod
+    def _read_commit() -> str:
+        """短 git 提交号；非 git 安装或命令不可用时返回空串。"""
+        try:
+            import subprocess
+            root = Path(__file__).resolve().parents[1]
+            r = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=2,
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except Exception:
+            return ""
 
     # ---- local traffic meter -----------------------------------------
     def _traffic_path(self) -> Path:
@@ -1355,6 +1373,7 @@ class Panel:
         inst = upd.detect_install()
         out = {
             "current": upd.VERSION,
+            "commit": self._commit,
             "platform": plat,
             "platform_label": upd.platform_label(plat),
             "install": inst,

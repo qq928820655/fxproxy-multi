@@ -3,6 +3,40 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 上游基线：`c4ba254`（ios151/firefox）。
 
+## [0.5.1] — 2026-11-20
+
+### 改进
+
+- 「添加账号」方式下拉把 **Cookie / 插件导出** 放到第一项并设为默认，
+  打开表单即显示 Cookie 输入框；其余（refresh_token / 邮箱密码 / sessionToken）顺序不变。
+
+## [0.5.0] — 2026-11-20
+
+### 新增
+
+- **账号导出**：下拉 8 项，`refresh_token` / `Cookie` 各配「下载」与「复制」，
+  支持勾选多个、全选；导出内容可被对应导入模式直接读回。
+- **节点禁用**：面板按节点禁用/启用，禁用节点从订阅、slug 路由与本地选择池排除。
+- **控制面 Firefox UA 伪装开关**：`runtime_user_agent`，降低 `python-requests` 指纹。
+- **额度统计补全**：vless 订阅、mux、HTTP/SOCKS5 端口、旧 `/vless` 桥、测速、
+  出口 IP 探测等所有走隧道的流量都计入本地计量。
+- **油猴脚本** `fxproxy-userscript/`；部署启动按端口就绪判定；`tools/sync_ext.py`。
+- 面板版本号旁显示当前 git 提交号。
+
+### 改进
+
+- **同账号重新导入按 `uid` 更新**而非新增，避免重复账号。
+- **登录依赖 `pyfxa`、`curl_cffi` 并入主依赖**，标准安装即带 Cookie/sessionToken 导入能力。
+- Chrome 扩展导出格式收敛到面板对应的 3 项，不再混入历史残留。
+- 账号导出的「复制」走剪贴板 API，不可用时回退 `execCommand` 并提示。
+
+### 修复
+
+- **账号状态 401 自愈**：丢弃失效的缓存 bearer 后重试一次（同账号在别处登录会作废旧 bearer）。
+- **开启 Firefox UA 时 `vpn.mozilla.org` 返回 406** 导致额度取不到；fpn 接口改用非浏览器 UA。
+- vless 服务端 `idna` 解码失败、双向泵死锁、零长度写异常。
+- Cookie / sessionToken 批量导入合并解析。
+
 ## [0.4.4] — 2026-11-19
 
 ### 新增
