@@ -31,7 +31,7 @@ DIST = ROOT / "dist"
 
 # 整目录收进去的
 DIRS = ("fxproxy", "deploy", "tools", "tests", "bridge", "chrome-extension",
-        "docs", "muxserver")
+        "docs", "muxserver", "fxproxy-userscript")
 # 单个文件收进去的
 FILES = (
     "README.md",
@@ -59,6 +59,7 @@ REQUIRED = (
     "fxproxy/__init__.py",
     "fxproxy/webui.py",
     "config.example.json",
+    "fxproxy-userscript/fxproxy.user.js",
 )
 
 

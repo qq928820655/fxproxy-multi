@@ -53,6 +53,29 @@ function Test-PortOpen([int]$Port) {
     finally { $c.Dispose() }
 }
 
+# 等端口就绪。比固定 Sleep 800ms 靠谱：低配机器/首次 import 要几秒。
+function Wait-Ready([int]$Port, [int]$Seconds = 10) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-PortOpen $Port) { return $true }
+        Start-Sleep -Milliseconds 300
+    }
+    return $false
+}
+
+function Show-Tail([string]$Name, [int]$Lines = 12) {
+    foreach ($f in @((Get-LogName $Name), (Join-Path $RunDir "$Name.err.log"))) {
+        if (-not (Test-Path $f)) { continue }
+        # python 按 UTF-8 写日志（行尾 CRLF）。PS 5.1 的 Get-Content 会把 \r 留在
+        # 行尾，输出到控制台时变成一次光标回位，看着像多出个字符。
+        $t = @(Get-Content $f -Tail $Lines -Encoding UTF8 -ErrorAction SilentlyContinue) |
+             ForEach-Object { $_.TrimEnd("`r") }
+        if ($t.Count -eq 0) { continue }
+        Write-Host "      --- $([IO.Path]::GetFileName($f)) ---" -ForegroundColor DarkGray
+        $t | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+    }
+}
+
 function Read-Cfg {
     if (-not (Test-Path $CfgPath)) { return $null }
     try { return (Get-Content $CfgPath -Raw | ConvertFrom-Json) } catch { return $null }
@@ -76,6 +99,24 @@ function Get-LogName([string]$Name) {
     return Join-Path $RunDir "$Name-$day.log"
 }
 
+# venv 里的 pythonw.exe 是个 launcher stub：它自己会再拉起真正的解释器，
+# PID 文件记的是外层 stub。外层先退、解释器继续监听，只看 PID 文件就会
+# 误报"未运行"（端口明明 LISTEN）。所以判活一律按命令行扫。
+# $Kind：run = 代理，web = 面板。
+function Get-SvcProcs([string]$Kind) {
+    $out = @()
+    $procs = Get-CimInstance Win32_Process -Filter "Name='fxproxy.exe' OR Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue
+    foreach ($pr in $procs) {
+        if (-not $pr.CommandLine) { continue }
+        if ($pr.CommandLine -notmatch '-m\s+fxproxy') { continue }
+        if ($pr.CommandLine -notmatch ('\s' + $Kind + '(\s|$)')) { continue }
+        # 同机可能有多套部署（E:\fxproxy + 仓库里一份），只认本目录的
+        if ($pr.CommandLine -notmatch [regex]::Escape($Root)) { continue }
+        $out += $pr
+    }
+    return $out
+}
+
 # --------------------------------------------------------------- start
 # 启动一个后台服务进程。用 pythonw.exe -m fxproxy：GUI 子系统，不附着控制台，
 # 所以任务栏/桌面上不会出现任何命令行窗口（python.exe 即使 -WindowStyle Hidden
@@ -85,7 +126,9 @@ function Start-Svc([string]$Name, [string[]]$ArgList) {
     $err = Join-Path $RunDir "$Name.err.log"
     if (Test-Path $PyW) {
         $exe  = $PyW
-        $args = @("-m", "fxproxy") + $ArgList
+        # -u 关掉 stdout 缓冲。pythonw 没有控制台，stdout 是块缓冲的，
+        # 进程一被结束时最后几 KB 日志全丢 —— 出错时只能看到 0 字节空文件。
+        $args = @("-u", "-m", "fxproxy") + $ArgList
     } else {
         # 老 venv 里没 pythonw 才退回 console 脚本，此时靠 WindowStyle 隐藏
         $exe  = $Fx
@@ -127,39 +170,44 @@ function Start-All {
         Warn "config.json 里还没有账号 —— 这次只起面板，代理不起"
         Warn "在面板「添加账号」里导入后，再点一次 一键启动.bat"
     } else {
-        $pp = Get-RunningPid "proxy"
-        if ($pp -gt 0) {
-            Ok "代理已在运行 (PID $pp)"
+        $live = @(Get-SvcProcs "run")
+        if ($live.Count -gt 0) {
+            Ok "代理已在运行 (PID $((($live | ForEach-Object { $_.ProcessId }) -join ',')))"
         } else {
             if (Test-PortOpen $httpPort) { Bad "端口 $httpPort 被别的程序占着：面板「运行状态 → 端口」改掉，或改 config.json 的 http_port"; return }
             if (Test-PortOpen $socksPort) { Bad "端口 $socksPort 被别的程序占着：面板「运行状态 → 端口」改掉，或改 config.json 的 socks_port"; return }
-            $err = Join-Path $RunDir "proxy.err.log"
             # -c 是顶层全局参数，必须放在子命令（run）前面
             $p = Start-Svc "proxy" @("-c", $CfgPath, "run")
-            Start-Sleep -Milliseconds 800
-            if ($p.HasExited) {
-                Bad "代理启动即退出，看 $err"
-                if (Test-Path $err) { Get-Content $err -Tail 15 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray } }
+            if (Wait-Ready $httpPort 10) {
+                Ok "代理已启动  HTTP:$httpPort  SOCKS5:$socksPort"
+            } elseif ($p.HasExited) {
+                # 端口没起来 + 进程已经退了 = 配置/依赖错，比单纯"超时"好定位
+                Bad "代理启动即退出 (exit $($p.ExitCode))，日志如下"
+                Show-Tail "proxy" 15
+                return
+            } else {
+                Bad "代理 10 秒内没起来，日志如下"
+                Show-Tail "proxy" 15
                 return
             }
-            Ok "代理已启动 (PID $($p.Id))  HTTP:$httpPort  SOCKS5:$socksPort"
         }
     }
 
     # ---- 面板
-    $wp = Get-RunningPid "web"
-    if ($wp -gt 0) {
-        Ok "面板已在运行 (PID $wp)"
+    $liveWeb = @(Get-SvcProcs "web")
+    if ($liveWeb.Count -gt 0) {
+        Ok "面板已在运行 (PID $((($liveWeb | ForEach-Object { $_.ProcessId }) -join ',')))"
     } else {
         if (Test-PortOpen $webPort) { Bad "面板端口 $webPort 被别的程序占着：重跑 install.bat 换 -WebPort，或关掉占用者"; return }
-        $err = Join-Path $RunDir "web.err.log"
         $p = Start-Svc "web" @("-c", $CfgPath, "web", "--no-open", "--web-port", "$webPort")
-        Start-Sleep -Milliseconds 800
-        if ($p.HasExited) {
-            Bad "面板启动即退出，看 $err"
-            if (Test-Path $err) { Get-Content $err -Tail 15 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray } }
+        if (Wait-Ready $webPort 10) {
+            Ok "面板已启动  http://127.0.0.1:$webPort"
+        } elseif ($p.HasExited) {
+            Bad "面板启动即退出 (exit $($p.ExitCode))，日志如下"
+            Show-Tail "web" 15
         } else {
-            Ok "面板已启动 (PID $($p.Id))  http://127.0.0.1:$webPort"
+            Bad "面板 10 秒内没起来，日志如下"
+            Show-Tail "web" 15
         }
     }
 
@@ -197,19 +245,19 @@ function Stop-All {
             Remove-Item -LiteralPath $pf -Force -ErrorAction SilentlyContinue
         }
     }
-    # 子进程：pythonw 之后还会派生一个解释器进程（venv 的 pythonw.exe 是
-    # launcher stub，真正监听端口的是它拉起来的那个），PID 文件里记的是外层，
-    # 所以停完必须等一下再按命令行扫一遍残留。
-    Start-Sleep -Milliseconds 600
-    $procs = Get-CimInstance Win32_Process -Filter "Name='fxproxy.exe' OR Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue
-    foreach ($pr in $procs) {
-        $exeOk = $pr.ExecutablePath -and $pr.ExecutablePath.StartsWith($Venv, [StringComparison]::OrdinalIgnoreCase)
-        $cmdOk = $pr.CommandLine -and ($pr.CommandLine -match '-m\s+fxproxy' -or $pr.CommandLine -match 'fxproxy\.exe')
-        if ($exeOk -or ($cmdOk -and $pr.CommandLine -match [regex]::Escape($Root))) {
-            Stop-Process -Id $pr.ProcessId -Force -ErrorAction SilentlyContinue
-            Ok "已清理残留 PID $($pr.ProcessId)"
-            $killed++
+    # pythonw 是 launcher stub，PID 文件记的是外层；外层退了真正的解释器
+    # 还在监听。杀掉之后的残留必须按命令行扫，扫两轮（stub 可能又把子进程拉起来）。
+    foreach ($round in 1..2) {
+        Start-Sleep -Milliseconds 400
+        $n = 0
+        foreach ($kind in @("run", "web")) {
+            foreach ($pr in @(Get-SvcProcs $kind)) {
+                Stop-Process -Id $pr.ProcessId -Force -ErrorAction SilentlyContinue
+                Ok "清理残留 $kind PID $($pr.ProcessId)"
+                $killed++; $n++
+            }
         }
+        if ($n -eq 0) { break }
     }
     if ($killed -eq 0) { Warn "本来就没在跑" }
 }
@@ -228,10 +276,15 @@ function Render-Status([bool]$DeepQuery, [string]$Footer) {
     Write-Host "  fxproxy 状态   $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor White
     Write-Host "  账号     $($tokens.Count) 个   国家  $(if ($cfg.country) { $cfg.country } else { '任意' })"
 
-    $pp = Get-RunningPid "proxy"
-    if ($pp -gt 0) { Ok "代理进程 PID $pp" } else { Bad "代理未运行" }
-    $wp = Get-RunningPid "web"
-    if ($wp -gt 0) { Ok "面板进程 PID $wp" } else { Bad "面板未运行" }
+    # 进程判活按命令行扫，不认 PID 文件：stub 退了进程还在的情况很常见。
+    $proxyLive = @(Get-SvcProcs "run")
+    $webLive   = @(Get-SvcProcs "web")
+    if ($proxyLive.Count -gt 0) {
+        Ok "代理进程 PID $((($proxyLive | ForEach-Object { $_.ProcessId }) -join ','))"
+    } else { Bad "代理未运行" }
+    if ($webLive.Count -gt 0) {
+        Ok "面板进程 PID $((($webLive | ForEach-Object { $_.ProcessId }) -join ','))"
+    } else { Bad "面板未运行" }
 
     Write-Host "  端口     HTTP $httpPort  $(if (Test-PortOpen $httpPort) { 'LISTEN' } else { 'closed' })   SOCKS5 $socksPort  $(if (Test-PortOpen $socksPort) { 'LISTEN' } else { 'closed' })   面板 $webPort  $(if (Test-PortOpen $webPort) { 'LISTEN' } else { 'closed' })"
     if (Test-PortOpen $webPort) {
@@ -242,7 +295,8 @@ function Render-Status([bool]$DeepQuery, [string]$Footer) {
     foreach ($name in @("proxy", "web")) {
         $log = Get-LogName $name
         if (Test-Path $log) {
-            $tail = @(Get-Content $log -Tail 6 -ErrorAction SilentlyContinue)
+            $tail = @(Get-Content $log -Tail 6 -Encoding UTF8 -ErrorAction SilentlyContinue) |
+                    ForEach-Object { $_.TrimEnd("`r") }
             Write-Host ""
             Write-Host "  --- $name 日志末尾 ---" -ForegroundColor DarkGray
             if ($tail.Count -gt 0) {
@@ -255,7 +309,7 @@ function Render-Status([bool]$DeepQuery, [string]$Footer) {
         }
     }
 
-    if ($DeepQuery -and $pp -gt 0 -and (Test-Path $Fx)) {
+    if ($DeepQuery -and $proxyLive.Count -gt 0 -and (Test-Path $Fx)) {
         Write-Host ""
         Write-Host "  --- 账号额度（联网查询）---" -ForegroundColor DarkGray
         Push-Location $Root
