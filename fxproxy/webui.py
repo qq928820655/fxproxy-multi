@@ -2113,25 +2113,20 @@ class Panel:
 
         return web.json_response({"nodes": nodes})
 
-    async def api_start(self, req):
-        try:
-            body = await req.json()
-        except Exception:
-            body = {}
-        country = (body.get("country") or "").upper() or None
-        node = (body.get("node") or "").strip() or None
+    async def _start_proxy(self, country, node):
+        """启动/切换代理，返回结果 dict。api_start 与开机自动恢复共用。"""
         if self.srv is not None:
             cur_node = getattr(self.srv.picker, "node", None)
             if node is None and cur_node is None and self.srv.picker.country == country:
-                return web.json_response({"ok": True, "already": True})
+                return {"ok": True, "already": True}
             if node is None:
                 # country-level switch reuses the running server
                 try:
                     self.srv.picker.node = None
                     await self.srv.switch_country(country)
-                    return web.json_response({"ok": True, "switched": True})
+                    return {"ok": True, "switched": True}
                 except Exception as e:
-                    return web.json_response({"error": str(e)})
+                    return {"error": str(e)}
             # node-level selection needs a dedicated picker: restart
             try:
                 await self.srv.stop()
@@ -2141,7 +2136,7 @@ class Panel:
         if self.pool is None or not self.pool.tokens:
             # 空池非 None（历史配置 refresh_tokens=[] 或异常路径）时 clients[0]
             # 会裸抛 IndexError；这里一并挡掉。
-            return web.json_response({"error": "无账号，先添加"})
+            return {"error": "无账号，先添加"}
         try:
             picker = NodePicker(self.pool.clients[0], country, node,
                                   exclude=self._disabled_nodes())
@@ -2156,10 +2151,48 @@ class Panel:
             srv._on_traffic = self._add_traffic
             await srv.start()
             self.srv = srv
-            return web.json_response({"ok": True, "account_count": len(self.pool.clients),
-                                      "node": node or ""})
+            return {"ok": True, "account_count": len(self.pool.clients),
+                    "node": node or ""}
         except Exception as e:
-            return web.json_response({"error": str(e)})
+            return {"error": str(e)}
+
+    async def api_start(self, req):
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        country = (body.get("country") or "").upper() or None
+        node = (body.get("node") or "").strip() or None
+        res = await self._start_proxy(country, node)
+        if res.get("ok"):
+            # 记住这次选择：更新/重启后据此自动恢复，不用再手动点一次。
+            self.cfg["last_running"] = True
+            self.cfg["last_country"] = country or ""
+            self.cfg["last_node"] = node or ""
+            self._panel_save()
+        return web.json_response(res)
+
+    async def restore_last(self):
+        """面板/更新重启后恢复上次的代理运行状态。"""
+        if not self.cfg.get("restore_on_start", True):
+            return
+        if not self.cfg.get("last_running"):
+            return
+        if self.pool is None or not self.pool.tokens:
+            return
+        country = (self.cfg.get("last_country") or "").upper() or None
+        node = (self.cfg.get("last_node") or "").strip() or None
+        res = await self._start_proxy(country, node)
+        # 节点可能已下线/被禁用：逐级回退到国家、再到任意节点。
+        if not res.get("ok") and node:
+            res = await self._start_proxy(country, None)
+        if not res.get("ok") and country:
+            res = await self._start_proxy(None, None)
+        if res.get("ok"):
+            print(f"[fxproxy] 已恢复上次运行状态 country={country or '-'} "
+                  f"node={node or '-'}")
+        else:
+            print(f"[fxproxy] 恢复运行状态失败：{res.get('error')}")
 
     async def api_speedtest(self, req):
         """Download benchmark pinned to one node via a temporary proxy
@@ -2223,6 +2256,8 @@ class Panel:
         if self.srv is not None:
             await self.srv.stop()
             self.srv = None
+        self.cfg["last_running"] = False
+        self._panel_save()
         return web.json_response({"ok": True})
 
     async def api_ports(self, req):
@@ -3411,6 +3446,13 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
                 pass
 
     app.on_startup.append(_start_muxserver)
+
+    async def _restore_last(_app):
+        # 更新/重启后按上次的 country/node 自动重开代理。放后台任务，
+        # 不阻塞面板端口就绪；失败只打日志，不影响面板本身。
+        panel._restore_task = asyncio.create_task(panel.restore_last())
+
+    app.on_startup.append(_restore_last)
     app.on_cleanup.append(_stop_muxserver)
     app.add_routes([
         web.get("/", panel.index),

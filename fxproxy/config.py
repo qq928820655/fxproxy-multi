@@ -43,6 +43,13 @@ DEFAULTS = {
     "panel_password_hash": "",
     "panel_password_salt": "",
     "panel_secret": "",
+    # 更新/重启后恢复上次的代理运行状态：last_running 由面板在启停时写入，
+    # 进程起来后按 last_country/last_node 自动重开，省去每次更新后手动再点
+    # 启动、重新选国家。restore_on_start=False 可关闭该行为。
+    "restore_on_start": True,
+    "last_running": False,
+    "last_country": "",
+    "last_node": "",
     # 内置 vless 服务端的 UUID。留空则优先读 bridge/uuid.txt（与外部 xray
     # 桥一致），都没有时自动生成并写这里，源码树只读也能用。
     "vless_uuid": "",

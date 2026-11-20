@@ -703,6 +703,68 @@ async def main():
             d = await r.json()
             check("无账号" in d.get("error", ""), "空池非 None 启动: 友好错误而非 IndexError")
 
+    print("[api] 更新/重启后恢复上次运行状态")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "restore.json"
+        cfgpath.write_text(json.dumps({
+            "refresh_tokens": ["tokA"], "pool_strategy": "round-robin",
+            "last_running": False, "restore_on_start": True,
+        }), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+
+        async def fake_start(country, node):
+            return {"ok": True}
+
+        panel._start_proxy = fake_start
+        app = web.Application()
+        app.add_routes([web.post("/api/start", panel.api_start),
+                        web.post("/api/stop", panel.api_stop)])
+        async with TestClient(TestServer(app)) as cli:
+            r = await cli.post("/api/start", json={"country": "us", "node": "h1"})
+            check((await r.json()).get("ok"), "启动成功")
+            saved = json.loads(cfgpath.read_text(encoding="utf-8"))
+            check(saved.get("last_running") is True, "启动后记录 last_running=True")
+            check(saved.get("last_country") == "US", "记录 last_country")
+            check(saved.get("last_node") == "h1", "记录 last_node")
+
+            panel2 = Panel(str(cfgpath))
+            got = []
+
+            async def fake2(country, node):
+                got.append((country, node))
+                return {"ok": True}
+
+            panel2._start_proxy = fake2
+            await panel2.restore_last()
+            check(got == [("US", "h1")], "重启后按上次 country/node 自动恢复")
+
+            panel3 = Panel(str(cfgpath))
+            seq = []
+
+            async def fake3(country, node):
+                seq.append((country, node))
+                return {"ok": node is None}
+
+            panel3._start_proxy = fake3
+            await panel3.restore_last()
+            check(seq == [("US", "h1"), ("US", None)], "节点失效回退到国家")
+
+            r = await cli.post("/api/stop")
+            check((await r.json()).get("ok"), "停止成功")
+            saved = json.loads(cfgpath.read_text(encoding="utf-8"))
+            check(saved.get("last_running") is False, "停止后记录 last_running=False")
+
+            panel4 = Panel(str(cfgpath))
+            seen = []
+
+            async def fake4(country, node):
+                seen.append((country, node))
+                return {"ok": True}
+
+            panel4._start_proxy = fake4
+            await panel4.restore_last()
+            check(seen == [], "手动停止后重启不自动拉起")
+
     print("[api] 区域限制 451 不再阻断导入（回归）")
     with tempfile.TemporaryDirectory() as d:
         cfgpath = Path(d) / "region.json"
