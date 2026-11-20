@@ -21,12 +21,12 @@ function check(cond, label) {
 check(F.tokensOf(payload).length === 2, "tokensOf 2 tokens");
 check(F.toJSON(payload).includes('"session_token"'), "JSON includes accounts");
 
-// 只导一种：Cookie 头。面板默认项「Cookie / 插件导出」直接认它
+// 三种都在（用户没要求删格式），format() 按 kind 分派
 const fmtKeys = Object.keys(F.FORMATS);
-check(fmtKeys.length === 1 && fmtKeys[0] === "cookie",
-      "FORMATS 只有 cookie 一项");
-check(F.format(payload) === F.toCookieHeader(payload),
-      "format() 固定输出 Cookie 头");
+check(fmtKeys.join(",") === "cookie,session,email",
+      "FORMATS = cookie,session,email");
+check(F.format(payload, "cookie") === F.toCookieHeader(payload), "cookie -> Cookie 头");
+check(F.format(payload, "session") === F.toLines(payload), "session -> 每行一个");
 
 const lines = F.toLines(payload);
 check(lines.trim().split("\n").length === 2, "lines = 2 rows");

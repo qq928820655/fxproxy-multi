@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "fxproxy — FxA Token Extractor",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Extract the Firefox Accounts sessionToken from the signed-in browser as a Cookie header the fxproxy panel accepts directly",
   "permissions": ["activeTab", "scripting", "clipboardWrite"],
   "host_permissions": [

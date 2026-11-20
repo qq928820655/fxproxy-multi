@@ -99,24 +99,18 @@
     return out.join("\n") + (out.length ? "\n" : "");
   }
 
-  // 只导一种格式：Cookie 头。
-  //
-  // 面板「添加账号」的默认项就叫「Cookie / 插件导出」，输入框提示写的也是
-  // "sessionToken=xxx Cookie 头"。导出端跟着它走，粘贴即用，不用选。
-  //
-  // 曾经这里挂过 sessionToken、邮箱两个额外选项：
-  //   sessionToken —— 就是 Cookie 头去掉 `sessionToken=` 前缀，同一串字符
-  //   邮箱        —— 面板那项要配密码，浏览器里没有密码，导了也入不了池
-  // 两个都不是另一种格式，只是同一样东西换个写法，删掉。
-  //
-  // refresh_token 不在其中：它必须由面板用 sessionToken 去 FxA 换
-  // （Hawk 签名 + PKCE），浏览器端做不了。
+  // 导出格式只列插件真能生成的三种。refresh_token 不在其中：它必须由面板
+  // 用 sessionToken 去 FxA 换（Hawk 签名 + PKCE），浏览器端做不了，
+  // 硬塞一个槽位只会让人点了报错。
   var FORMATS = {
-    cookie: { label: "Cookie 头", ext: "txt", fn: toCookieHeader }
+    cookie:  { label: "Cookie 头", ext: "txt", fn: toCookieHeader },
+    session: { label: "sessionToken", ext: "txt", fn: toLines },
+    email:   { label: "邮箱", ext: "txt", fn: toEmails }
   };
 
-  function format(payload) {
-    return FORMATS.cookie.fn(payload);
+  function format(payload, kind) {
+    var f = FORMATS[kind] || FORMATS.cookie;
+    return f.fn(payload);
   }
 
   return {

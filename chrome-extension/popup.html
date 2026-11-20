@@ -27,17 +27,21 @@
 
   <ol>
     <li>在住宅 IP 的 Chrome 打开 <b>accounts.firefox.com</b> 并登录</li>
-    <li>点「提取并复制」</li>
-    <li>面板「添加账号」→ 方式「Cookie / 插件导出」→ 粘贴 → 添加</li>
+    <li>下面选一项，点「提取并复制」</li>
+    <li>面板「添加账号」的方式选<b>同一项</b>，粘贴，点添加</li>
   </ol>
 
-  <label>导出格式</label>
-  <div class="hint" style="margin:0 0 10px;">Cookie 头 · <code>sessionToken=…</code>　面板「Cookie / 插件导出」那一项直接认</div>
+  <label for="format">导出格式</label>
+  <select id="format">
+    <option value="cookie">Cookie 头（默认，最省事）</option>
+    <option value="session">sessionToken（每行一个）</option>
+    <option value="email">邮箱（面板还需填密码）</option>
+  </select>
 
-  <button id="extract">提取并复制</button>
+  <button id="extract" style="margin-top:10px;">提取并复制凭证</button>
   <div id="msg"></div>
   <textarea id="out" readonly placeholder="提取结果会显示在这里"></textarea>
-  <div class="hint" id="tip">插件只导这一种：Cookie 头。面板「添加账号 → Cookie / 插件导出」是默认项，粘贴即用。refresh_token 由面板拿 sessionToken 换，插件生成不了。</div>
+  <div class="hint" id="tip">三种格式，面板「添加账号」里都有对应的方式，选同一种即可。refresh_token 只能在面板里由 sessionToken 换出，插件无法生成。</div>
 
   <script src="formats.js"></script>
   <script src="popup.js"></script>
