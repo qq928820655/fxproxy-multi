@@ -61,6 +61,50 @@ def test_config_migration():
         del os.environ["FXPROXY_REFRESH_TOKEN"]
 
 
+def test_update_flow():
+    print("[update] 一键更新不会卡死在 409")
+    import subprocess
+    import tempfile
+    import time as _t
+    from fxproxy import updater
+    from fxproxy.webui import Panel
+
+    p = Panel.__new__(Panel)
+    p._updating = False
+    p._update_pid = None
+    p._update_until = 0.0
+    check(p._update_busy() is False, "空闲时不忙")
+    p._updating = True
+    check(p._update_busy() is True, "请求进行中时忙")
+    p._updating = False
+    p._update_pid = 2_000_000_000
+    p._update_until = _t.monotonic() + 600
+    check(p._update_busy() is False, "升级脚本已退出时自动放开（不再 409）")
+    check(p._update_pid is None, "死 pid 被清掉")
+    p._update_pid = os.getpid()
+    p._update_until = _t.monotonic() + 600
+    check(p._update_busy() is True, "脚本存活时仍拦截")
+    p._update_until = _t.monotonic() - 1
+    check(p._update_busy() is False, "TTL 到期后放开")
+    check(p._update_pid is None, "过期 pid 被清掉")
+
+    d = Path(tempfile.mkdtemp())
+    script, kind = updater.build_script(
+        "release", d, d / "pkg.tar.gz", d / ".run", "9.9.9", "0.5.6",
+        d / "cfg.json", "0.0.0.0", 8765, mode="pid")
+    body = script.read_text(encoding="utf-8")
+    check(kind == "bash", "生成 bash 脚本")
+    check("port_busy()" in body and "fuser -k" in body,
+          "stop_all 校验端口释放并按端口兜底击杀")
+    check("PROBE=127.0.0.1" in body, "绑定 0.0.0.0 时探测走回环")
+    check("/api/version" in body and "current" in body,
+          "健康检查校验运行版本而非仅端口应答")
+    check("runtime.env" in body and "command -v python3" in body,
+          "start_all 有解释器回退链")
+    r = subprocess.run(["bash", "-n", str(script)], capture_output=True)
+    check(r.returncode == 0, "生成的脚本 bash 语法通过")
+
+
 def test_pool_round_robin():
     print("[pool] round-robin 均匀轮转")
     pool = TokenPool(["t1", "t2", "t3"], strategy="round-robin")
@@ -440,6 +484,7 @@ if __name__ == "__main__":
     test_fpn_401_selfheal_and_ua()
     test_proxy_splice_traffic()
     test_node_picker_exclude()
+    test_update_flow()
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()
