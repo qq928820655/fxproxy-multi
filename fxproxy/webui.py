@@ -1175,8 +1175,13 @@ class Panel:
         # 面板自身监听端口：改代理端口时要把面板端口排除掉，否则自己把自己顶掉
         self.web_host = web_host
         self.web_port = int(web_port or 8765)
-        # 一键更新：同一时间只允许一个，重启进程后自然复位
+        # 一键更新：请求级标记只覆盖「下载 + 生成脚本 + spawn」这段时间；
+        # spawn 返回后立即复位，避免脚本重启失败时旧进程永远 409。
+        # 脚本自身的存活由 _update_pid + TTL 兜底，脚本退出（成功被替换或
+        # 失败）后自动放开，允许重试。
         self._updating = False
+        self._update_pid: int | None = None
+        self._update_until = 0.0
         # 本地流量计量：Firefox 的免费账号不会通过 API 扣减额度（x-quota
         # 始终返回满额），所以用量只能自己按 vless 转发字节数累计。持久化
         # 到配置同目录的 traffic.json，重启不清零。
@@ -1436,9 +1441,38 @@ class Panel:
                 out["error"] = f"检查失败：{e}"
         return web.json_response(out)
 
+    _UPDATE_TTL = 600.0  # 升级脚本最长存活时间，超时后允许重试
+
+    def _update_busy(self) -> bool:
+        """是否已有更新在进行。
+
+        请求级标记覆盖「下载 + 生成脚本 + spawn」；spawn 返回后改看升级脚本
+        进程是否还活着。脚本退出（重启成功则本进程已被替换，失败则脚本已死）
+        后自动放开，避免重启静默失败时旧进程永远返回 409。
+        """
+        if self._updating:
+            return True
+        pid = self._update_pid
+        if not pid:
+            return False
+        if time.monotonic() >= self._update_until:
+            self._update_pid = None
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            self._update_pid = None
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            self._update_pid = None
+            return False
+        return True
+
     async def api_update(self, req):
         upd = _updater()
-        if self._updating:
+        if self._update_busy():
             return web.json_response({"error": "已有更新在进行，等它跑完"}, status=409)
         try:
             body = await req.json()
@@ -1474,7 +1508,6 @@ class Panel:
             rel = await upd.fetch_latest(proxy=proxy)
             # 先比版本再挑制品：已是最新时不该因为「本平台没附件」报错
             if not upd.is_newer(rel["version"], upd.VERSION):
-                self._updating = False
                 return web.json_response({"ok": True, "up_to_date": True,
                                           "current": upd.VERSION,
                                           "latest": rel["version"]})
@@ -1489,17 +1522,24 @@ class Panel:
                 gh_proxy=(self.cfg.get("update_gh_proxy") or "").strip() or None,
                 web_host=self.web_host, web_port=self.web_port,
             )
+            # 脚本已 spawn，请求级锁到此为止；接下来靠脚本 pid 判存活
+            pid = info.get("pid")
+            if pid:
+                self._update_pid = int(pid)
+                self._update_until = time.monotonic() + self._UPDATE_TTL
             return web.json_response(info)
         except Exception as e:
-            self._updating = False
             return web.json_response({"error": str(e)}, status=500)
+        finally:
+            # 无论成功失败都复位：脚本会接管真正的重启，标记不能留到进程结束
+            self._updating = False
 
     async def api_update_status(self, req):
         upd = _updater()
         inst = upd.detect_install()
         root = Path(inst["root"]) if inst["root"] else Path.cwd()
         d = upd.read_status(root)
-        d["updating"] = bool(self._updating)
+        d["updating"] = self._update_busy()
         d["current"] = upd.VERSION
         return web.json_response(d)
 

@@ -11,6 +11,26 @@
 
 组件版本：fxproxy `0.5.7` · Chrome 扩展 `1.2.5` · 油猴 `1.2.0`
 
+### 修复
+
+- **一键更新后永远 409「已有更新在进行」**：`api_update` 成功路径不复位
+  `_updating`，原假设是脚本重启进程后自然消失；但重启一旦静默失败，旧进程
+  就带着 `True` 标记继续跑。现在请求级标记用 `try/finally` 覆盖「下载 + 生成
+  脚本 + spawn」，spawn 返回即复位；随后按升级脚本 pid 判存活，脚本退出
+  （无论成功重启还是失败）自动放开，另有 10 分钟 TTL 兜底。
+- **pid 模式杀不掉手工启动的面板**：`stop_all` 只遍历 `$RUN/*.pid`，终端
+  手起 / docker / nohup 的进程不在名单里，旧进程占着端口让新版本起不来。
+  现在杀完 PID 后轮询端口释放（最多 10 秒），仍被占用则按端口用
+  `fuser -k` / `lsof` / `ss` 兜底击杀，清不掉就明确 fail，不再静默继续。
+- **健康检查误报成功**：原来 curl `/api/state` 只要端口有人应答就算成功，
+  旧进程没死时照样 200。现在改读 `/api/version` 的 `current`，必须等于目标
+  版本才算 ok；端口有人但不是目标版本写 `warn` 并提示手动重启。
+- **`start_all` 硬编码 `.venv/bin/python`**：无 venv 的安装（系统 Python、
+  沙箱）启动直接 `no such file or directory`。现在按「`runtime.env` 记录的
+  解释器 → `.venv/bin/python` → PATH 上的 `python3`/`python`」回退；面板
+  在 spawn 前把自己的 `sys.executable` 写进 `.run/runtime.env`。Windows 端
+  同步加了 `py`/`python3` 回退与版本校验。
+
 ### 变更
 
 - fix(import): 区域限制 451 不再阻断 refresh_token 导入，uid/邮箱从导出 JSON 带过去

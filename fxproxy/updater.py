@@ -276,6 +276,9 @@ FROM=__FROM__
 WH=__WH__
 WP=__WP__
 CFG=__CFG__
+# 探测/健康检查走回环：面板绑 0.0.0.0 时 0.0.0.0 不能直接连
+PROBE="$WH"
+[[ "$PROBE" == "0.0.0.0" || "$PROBE" == "::" || -z "$PROBE" ]] && PROBE=127.0.0.1
 exec >>"$LOG" 2>&1
 say() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 status() {
@@ -298,6 +301,17 @@ if [[ "$MODE" == "systemd" ]]; then
   fi
 fi
 
+port_busy() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | grep -qE "[:.]$WP[[:space:]]" && return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti "tcp:$WP" >/dev/null 2>&1 && return 0
+  fi
+  (exec 3<>"/dev/tcp/$PROBE/$WP") 2>/dev/null && { exec 3>&- 2>/dev/null; return 0; }
+  return 1
+}
+
 stop_all() {
   if [[ $SYSD -eq 1 ]]; then
     systemctl $SCOPE stop fxproxy-web fxproxy 2>/dev/null || true
@@ -306,14 +320,37 @@ stop_all() {
   if [[ -x "$(command -v fxproxy-ctl 2>/dev/null || echo /nonexistent)" ]]; then
     fxproxy-ctl stop >/dev/null 2>&1 || true
   fi
-  local f pid
+  local f pid i
   for f in "$RUN"/*.pid; do
     [[ -f "$f" ]] || continue
     pid=$(cat "$f" 2>/dev/null || echo "")
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
     rm -f "$f"
   done
-  sleep 1
+  # 面板可能是终端手起 / docker / nohup，不在 *.pid 名单里。等端口释放，
+  # 仍被占用就按端口兜底击杀，避免旧进程占着端口让新版本起不来。
+  for i in $(seq 1 10); do
+    port_busy || return 0
+    sleep 1
+  done
+  say "端口 $WP 仍被占用，按端口兜底清理 ..."
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "$WP/tcp" >/dev/null 2>&1 || true
+  elif command -v lsof >/dev/null 2>&1; then
+    for pid in $(lsof -ti "tcp:$WP" 2>/dev/null); do kill "$pid" 2>/dev/null || true; done
+  elif command -v ss >/dev/null 2>&1; then
+    for pid in $(ss -ltnp "sport = :$WP" 2>/dev/null \
+                 | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+      kill "$pid" 2>/dev/null || true
+    done
+  fi
+  for i in $(seq 1 5); do
+    port_busy || return 0
+    sleep 1
+  done
+  if port_busy; then
+    fail "端口 $WP 仍被占用，无法安全重启；请手动停掉占用该端口的进程后重试"
+  fi
 }
 
 start_all() {
@@ -326,7 +363,20 @@ start_all() {
     fxproxy-ctl start >/dev/null 2>&1 || true
     return
   fi
-  ( cd "$DEST" && nohup "$DEST/.venv/bin/python" -m fxproxy -c "$CFG" web \
+  # 解释器优先级：面板写下的 runtime.env -> 安装目录 .venv -> PATH。
+  # 无 venv 的安装（系统 Python、沙箱）以前会硬撞 .venv 路径，静默起不来。
+  local py="" k v
+  if [[ -f "$RUN/runtime.env" ]]; then
+    while IFS='=' read -r k v; do
+      [[ "$k" == "FXP_PYTHON" && -n "$v" ]] && py="$v"
+    done <"$RUN/runtime.env"
+    [[ -x "$py" ]] || py=""
+  fi
+  [[ -n "$py" ]] || py="$DEST/.venv/bin/python"
+  [[ -x "$py" ]] || py="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+  [[ -n "$py" ]] || fail "找不到可用的 Python 解释器，无法启动面板"
+  say "用解释器：$py"
+  ( cd "$DEST" && nohup "$py" -m fxproxy -c "$CFG" web \
       --no-open --web-host "$WH" --web-port "$WP" >>"$RUN/web.log" 2>&1 & \
     echo $! >"$RUN/web.pid" )
 }
@@ -373,23 +423,45 @@ fi
 
 say "启动服务 ..."
 start_all
-sleep 4
+sleep 2
 
-LEFT=0
-if [[ $SYSD -eq 1 ]]; then
-  systemctl $SCOPE is-active --quiet fxproxy-web 2>/dev/null || LEFT=1
-else
-  [[ -n "$(command -v curl 2>/dev/null)" ]] && {
-    curl -fsS -m 5 "http://$WH:$WP/api/state" >/dev/null 2>&1 || LEFT=1
-  }
-fi
+# 健康检查必须是「新版本在跑」，不是「端口有人应答」：旧进程没死时
+# /api/state 照样 200，会给出假的成功结论。改读 /api/version 的 current。
+health() {
+  local i body
+  if [[ $SYSD -eq 1 ]]; then
+    for i in $(seq 1 12); do
+      systemctl $SCOPE is-active --quiet fxproxy-web 2>/dev/null && return 0
+      sleep 1
+    done
+    return 1
+  fi
+  command -v curl >/dev/null 2>&1 || return 3
+  for i in $(seq 1 12); do
+    body=$(curl -fsS -m 3 "http://$PROBE:$WP/api/version" 2>/dev/null) || body=""
+    if [[ -n "$body" ]] && printf '%s' "$body" \
+        | grep -qE "\"current\"[[:space:]]*:[[:space:]]*\"$WANT\""; then
+      return 0
+    fi
+    sleep 1
+  done
+  [[ -n "${body:-}" ]] && return 2   # 有人应答，但不是目标版本
+  return 1
+}
 
-if [[ $LEFT -eq 1 ]]; then
-  say "服务没起来，看日志：$RUN/web.log / journalctl -u fxproxy-web"
-  status warn "已覆盖到 $WANT，但服务未确认启动"
-else
+health; HC=$?
+if [[ $HC -eq 0 ]]; then
   say "== 升级完成：$FROM -> $WANT =="
   status ok "已升级到 $WANT"
+elif [[ $HC -eq 2 ]]; then
+  say "面板有应答但版本不是 $WANT（旧进程可能仍在跑）"
+  status warn "源码已覆盖到 $WANT，但运行中的面板不是该版本；请手动重启"
+elif [[ $HC -eq 3 ]]; then
+  say "没有 curl，无法校验版本；看日志：$RUN/web.log"
+  status warn "已覆盖到 $WANT，未校验运行版本（缺 curl）"
+else
+  say "服务没起来，看日志：$RUN/web.log / journalctl -u fxproxy-web"
+  status warn "已覆盖到 $WANT，但服务未确认启动"
 fi
 rm -f "$PKG"
 """
@@ -404,6 +476,8 @@ $Want  = __WANT__
 $From  = __FROM__
 $WebHost = '__WH__'
 $WebPort = __WP__
+$Probe = $WebHost
+if ($Probe -eq '0.0.0.0' -or $Probe -eq '::' -or [string]::IsNullOrEmpty($Probe)) { $Probe = '127.0.0.1' }
 $Cfg   = __CFG__
 
 function Say([string]$m) {
@@ -473,16 +547,34 @@ try {
         & $py -m pip install -q -e $Dest 2>&1 | Add-Content $Log
     } else {
         $cmd = Get-Command python -ErrorAction SilentlyContinue
-        if ($cmd) { $py = $cmd.Source }
+        if (-not $cmd) { $cmd = Get-Command py -ErrorAction SilentlyContinue }
+        if (-not $cmd) { $cmd = Get-Command python3 -ErrorAction SilentlyContinue }
+        if ($cmd) { $py = $cmd.Source } else { throw "找不到可用的 Python 解释器" }
     }
 
     Say "启动服务 ..."
     Start-Process -FilePath $py `
         -ArgumentList @('-m','fxproxy','-c',$Cfg,'web','--no-open','--web-host',$WebHost,'--web-port',"$WebPort") `
         -WorkingDirectory $Dest -WindowStyle Hidden
-    Start-Sleep -Seconds 5
-    Say "== 升级完成：$From -> $Want =="
-    Set-Status 'ok' "已升级到 $Want"
+    $ok = $false; $answered = $false
+    for ($i = 0; $i -lt 12; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $resp = Invoke-RestMethod -Uri "http://${Probe}:$WebPort/api/version" -TimeoutSec 3
+            if ($resp) { $answered = $true }
+            if ($resp.current -eq $Want) { $ok = $true; break }
+        } catch {}
+    }
+    if ($ok) {
+        Say "== 升级完成：$From -> $Want =="
+        Set-Status 'ok' "已升级到 $Want"
+    } elseif ($answered) {
+        Say "面板有应答但版本不是 $Want（旧进程可能仍在跑）"
+        Set-Status 'warn' "源码已覆盖到 $Want，但运行中的面板不是该版本；请手动重启"
+    } else {
+        Say "服务没起来，看日志：$Log"
+        Set-Status 'warn' "已覆盖到 $Want，但服务未确认启动"
+    }
 } catch {
     Say "FAIL $_"
     Set-Status 'fail' "$_"
@@ -630,6 +722,13 @@ async def run_update(dest: Path, cfg: Path, tag: str, asset: dict, *,
         web_host, web_port, mode=mode,
     )
     (run / "update.status").unlink(missing_ok=True)
+    # 记下面板自己的解释器：无 venv 的安装（系统 Python / 沙箱）靠它在重启
+    # 时复用同一个 Python，而不是硬撞 .venv/bin/python 后静默失败。
+    try:
+        (run / "runtime.env").write_text(
+            f"FXP_PYTHON={sys.executable}\n", encoding="utf-8")
+    except OSError:
+        pass
     pid = spawn(script, kind, run / "update.log")
     return {
         "ok": True,
