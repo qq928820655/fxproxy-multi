@@ -4,7 +4,7 @@
 
 | 部件 | 版本 | 版本号所在 | 运行时确认 |
 |---|---|---|---|
-| fxproxy（面板 + 代理 + CLI） | `0.5.6` | `fxproxy/__init__.py`、`pyproject.toml` | `fxproxy --version` |
+| fxproxy（面板 + 代理 + CLI） | `0.5.7` | `fxproxy/__init__.py`、`pyproject.toml` | `fxproxy --version` |
 | Chrome 扩展 | `1.2.5` | `chrome-extension/manifest.json` | 弹窗标题 |
 | 油猴脚本 | `1.2.0` | `fxproxy-userscript/fxproxy.user.js` 的 `@version` | 油猴管理面板 |
 | muxserver（Go 加速器） | 随主包 | 无独立版本号 | — |

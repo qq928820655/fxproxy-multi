@@ -62,7 +62,17 @@ def fake_quota(self):
             "subscribed": True, "limited_bandwidth": False}
 
 
+def fake_access(self):
+    # 导入现在先走 OAuth refresh 验证（不再依赖 fpn/status 的 451）。
+    # 桩里保持和 fake_quota 一致的"无效 token"判定，否则测试里的
+    # sessionToken -> bootstrap 分支会因为假 access_token 成功而走不到。
+    if len(self.refresh_token) == 64 and len(set(self.refresh_token)) == 1:
+        raise RuntimeError("Invalid authentication token: Missing authentication")
+    return "access-stub"
+
+
 async def main():
+    guardian.GuardianClient.access_token = property(fake_access)
     guardian.GuardianClient.quota = fake_quota  # 打桩，避免外网
     # 服务器列表也打桩：api_servers 用公开 client，不能让它真的上网
     guardian.GuardianClient.nodes_by_country = lambda self: {
@@ -692,6 +702,38 @@ async def main():
             r = await cli.post("/api/start", json={"country": "US"})
             d = await r.json()
             check("无账号" in d.get("error", ""), "空池非 None 启动: 友好错误而非 IndexError")
+
+    print("[api] 区域限制 451 不再阻断导入（回归）")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "region.json"
+        cfgpath.write_text(json.dumps({
+            "refresh_tokens": [], "pool_strategy": "round-robin", "country": "US",
+        }), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        orig_quota = guardian.GuardianClient.quota
+
+        def quota_451(self):
+            raise RuntimeError('status failed: 451 {"error":"unavailable_in_region"}')
+
+        guardian.GuardianClient.quota = quota_451
+        try:
+            tok = "b" * 63 + "a"
+            app = web.Application()
+            app.add_routes([web.post("/api/login", panel.api_login)])
+            async with TestClient(TestServer(app)) as cli:
+                r = await cli.post("/api/login", json={
+                    "mode": "cookie",
+                    "cookie": json.dumps({
+                        "format": "fxproxy-accounts", "version": 1,
+                        "accounts": [{"uid": 9802445, "email": "x@example.com",
+                                      "refresh_token": tok}]})})
+                dr = await r.json()
+                check(dr.get("ok") and dr.get("added") == 1,
+                      f"fpn/status 报 451 时仍能导入（{dr}）")
+                check(panel.pool is not None and panel.pool.tokens == [tok],
+                      "451 下 token 实际入池")
+        finally:
+            guardian.GuardianClient.quota = orig_quota
 
     print(f"\nALL PASS ({PASS} checks)")
 

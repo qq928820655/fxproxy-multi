@@ -1997,8 +1997,11 @@ class Panel:
                 rt = (body.get("refresh_token") or "").strip()
                 if not rt:
                     return web.json_response({"error": "请粘贴 refresh_token"})
-                gc = GuardianClient(rt)
-                await asyncio.to_thread(gc.quota)  # 先验证可用
+                def _verify_only(rt=rt):
+                    # 裸 token 同理：OAuth 能换到 access_token 就算有效，
+                    # 不拿 fpn/status 的 451 当凭证错误。
+                    GuardianClient(rt).access_token
+                await asyncio.to_thread(_verify_only)
                 res = {"refresh_token": rt}
             elif mode in ("cookie", "session"):
                 # 两种输入本质相同：一份文本里装着若干凭证。
@@ -2031,10 +2034,13 @@ class Panel:
                 # 导出文件里带的邮箱：入池后直接贴到账号上，省一次 profile 请求，
                 # 也让面板列表立刻显示邮箱而不是等第一次额度刷新。
                 email_of: dict[str, str] = {}
+                uid_of: dict[str, str] = {}
                 for _a in parsed["accounts"]:
                     _tok = _a.get("session_token") or _a.get("refresh_token")
                     if _tok and _a.get("email"):
                         email_of[_tok] = _a["email"]
+                    if _tok and _a.get("uid"):
+                        uid_of[_tok] = str(_a["uid"])
 
                 def _apply_email(rt):
                     email = email_of.get(rt)
@@ -2049,9 +2055,16 @@ class Panel:
                         c._email = email
 
                 def _verify(rt):
-                    # 在 worker 线程内同步验证，返回账号 uid（失败抛异常）
+                    # 只验 refresh_token 本身：OAuth 端点没有区域限制。
+                    # 旧版在这里调 quota()，会碰 vpn.mozilla.org/api/v1/fpn/status，
+                    # 受限区域返回 451 unavailable_in_region，明明能换到
+                    # access_token 的有效 token 全被判导入失败。
                     gc = GuardianClient(rt)
-                    gc.quota()
+                    gc.access_token          # 触发 OAuth refresh，失败直接抛
+                    try:
+                        gc.quota()           # 能取到 uid/额度就取，取不到不影响入池
+                    except Exception:
+                        pass
                     return gc._uid
 
                 async def _take(rt, label):
@@ -2060,7 +2073,7 @@ class Panel:
                         skipped += 1
                         return
                     try:
-                        uid = await asyncio.to_thread(_verify, rt)
+                        uid = await asyncio.to_thread(_verify, rt) or uid_of.get(rt)
                     except Exception as e:
                         errors.append(f"{label} {str(rt)[:8]}…: {e}")
                         return
