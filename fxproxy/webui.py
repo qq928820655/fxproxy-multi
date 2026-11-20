@@ -277,6 +277,7 @@ PAGE = r"""<!doctype html>
       <button id="startBtn" class="primary">启动</button>
       <button id="stopBtn" class="stop" disabled>停止</button>
       <button id="testBtn">测试出口 IP</button>
+      <button id="anyBtn" class="sm" style="display:none">恢复任意出口</button>
     </div>
     <div id="nodeWarn" style="display:none;margin-top:8px;color:#f0b400;font-size:13px;"></div>
     <div id="egress" class="egress muted"></div>
@@ -638,9 +639,14 @@ function renderNodeRows(){
     const offPill = off ? ' <span class="pill off">已禁用</span>' : '';
     const rowStyle = off ? ' style="opacity:.45;"'
                          : (cur ? ' style="background:#123329;"' : '');
+    // 当前固定出口的按钮改成「取消固定」，否则用户只能切到别的节点，
+    // 没法回到「任意」。
+    const actBtn = cur
+      ? `<button class="sm" onclick="clearNode()">取消固定</button> `
+      : `<button class="sm primary" ${off?'disabled':''} onclick="useNode('${n.host}')">设为出口</button> `;
     return `<tr${rowStyle}><td class="nname">${n.name}${cur?' <span class="pill on">当前</span>':''}${offPill}</td>`+
       `<td class="nhost">${n.host}${ipLine}</td><td data-l="端口">${n.port}</td>${lat}${bw}`+
-      `<td class="nact"><button class="sm primary" ${off?'disabled':''} onclick="useNode('${n.host}')">设为出口</button> `+
+      `<td class="nact">${actBtn}`+
       `<button class="sm" id="st-${n.host}" onclick="testNode('${n.host}')">测速</button> `+
       `<button class="sm" onclick="toggleNode('${n.host}', ${off?'false':'true'})">${off?'启用':'禁用'}</button></td></tr>`;
   });
@@ -714,6 +720,16 @@ async function useNode(host){
   $("probeMsg").textContent = d.error ? ("失败："+d.error) : ("出口已固定到 "+host);
   userPicked = false; await loadState(); await loadNodes(false);
 }
+async function clearNode(){
+  // 取消固定出口：回到「任意」，不再钉死某个节点。
+  $("probeMsg").textContent = "取消固定出口，恢复任意 …";
+  const r = await fetch("/api/start",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({country:""})});
+  const d = await r.json();
+  $("probeMsg").textContent = d.error ? ("失败："+d.error) : "已取消固定出口，恢复任意";
+  $("country").value = "";
+  userPicked = false; await loadState(); await loadNodes(false);
+}
 async function testNode(host){
   const btn = $("st-"+host); const bw = $("bw-"+host);
   btn.disabled = true; bw.className="muted"; bw.style.color=""; bw.textContent="测速中…";
@@ -778,6 +794,7 @@ async function loadState(){
     _sw.textContent = "当前通过本机地址访问：订阅里的 server 会是 127.0.0.1，跨机不可用。请改用预览域名/公网地址打开面板后再复制订阅（才会生成国家节点）。";
   } else { _sw.style.display = "none"; }
   CURRENT_NODE = s.node || "";
+  $("anyBtn").style.display = s.node ? "" : "none";
   let egress;
   if (s.node) egress = "出口：固定节点 "+s.node+(s.egress_country?(" ("+s.egress_country+")"):"");
   else if (s.egress_country) egress = "出口：任意 · 最近 "+s.egress_country;
@@ -1045,6 +1062,7 @@ $("startBtn").onclick = async () => {
   userPicked = false; await loadState();
 };
 $("stopBtn").onclick = async () => { await fetch("/api/stop",{method:"POST"}); await loadState(); };
+$("anyBtn").onclick = clearNode;
 $("portBtn").onclick = async () => {
   const btn = $("portBtn"), msg = $("portMsg");
   btn.disabled = true; msg.style.color = ""; msg.textContent = "应用中…";

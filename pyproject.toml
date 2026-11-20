@@ -1,6 +1,6 @@
 [project]
 name = "fxproxy"
-version = "0.5.14"
+version = "0.5.15"
 description = "Standalone landing proxy over Firefox IP Protection (Mozilla free 50GB/mo)"
 readme = "README.md"
 requires-python = ">=3.10"

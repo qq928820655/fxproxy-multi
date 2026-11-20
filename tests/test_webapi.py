@@ -765,6 +765,48 @@ async def main():
             await panel4.restore_last()
             check(seen == [], "手动停止后重启不自动拉起")
 
+    print("[api] 取消固定出口（恢复任意）+ 切换后保留禁用节点")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "clearnode.json"
+        cfgpath.write_text(json.dumps({"refresh_tokens": ["tokA"]}),
+                           encoding="utf-8")
+        panel = Panel(str(cfgpath))
+
+        class _FP:
+            country = "US"
+            node = "h1"
+            exclude = {"x"}
+
+        class _FS:
+            def __init__(self):
+                self.picker = _FP()
+
+            async def switch_country(self, country):
+                self.picker.country = country
+                self.picker.node = None
+
+        panel.srv = _FS()
+        app = web.Application()
+        app.add_routes([web.post("/api/start", panel.api_start)])
+        async with TestClient(TestServer(app)) as cli:
+            r = await cli.post("/api/start", json={"country": ""})
+            d2 = await r.json()
+            check(d2.get("ok") and d2.get("switched"), "清空国家返回 switched")
+            check(panel.srv.picker.node is None, "固定节点已取消，恢复任意")
+
+    class _FC:
+        def nodes_by_country(self):
+            return {"US": {"name": "United States",
+                           "nodes": [("a", 2499), ("b", 2499)]}}
+
+    fc = _FC()
+    p0 = webui_mod.NodePicker(fc, "US", exclude={"a"})
+    srv = webui_mod.ProxyServer(guardian.TokenPool(["t"]), p0)
+    srv.client = fc
+    await srv.switch_country(None)
+    check(srv.picker.country is None, "switch_country(None) 恢复任意")
+    check(srv.picker.exclude == {"a"}, "切换国家后仍排除禁用节点")
+
     print("[api] 区域限制 451 不再阻断导入（回归）")
     with tempfile.TemporaryDirectory() as d:
         cfgpath = Path(d) / "region.json"

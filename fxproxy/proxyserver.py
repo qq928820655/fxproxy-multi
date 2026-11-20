@@ -474,9 +474,12 @@ class ProxyServer:
         """Switch egress country without touching the listeners.
 
         New connections immediately use the new country; already-open
-        tunnels keep running until they close on their own.
+        tunnels keep running until they close on their own. Disabled-node
+        exclusions are carried over — otherwise switching back to "any"
+        would silently re-enable nodes the user turned off.
         """
-        picker = NodePicker(self.client, country)
+        picker = NodePicker(self.client, country,
+                            exclude=getattr(self.picker, "exclude", None))
         await asyncio.to_thread(picker.refresh)
         self.picker = picker
         _log(f"出口国家切换为: {picker.country or '任意'}")
