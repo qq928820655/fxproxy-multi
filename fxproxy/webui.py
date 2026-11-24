@@ -792,6 +792,9 @@ async function loadState(){
   if(_localHosts.includes(location.hostname)){
     _sw.style.display = "";
     _sw.textContent = "当前通过本机地址访问：订阅里的 server 会是 127.0.0.1，跨机不可用。请改用预览域名/公网地址打开面板后再复制订阅（才会生成国家节点）。";
+  } else if(location.protocol === "http:"){
+    _sw.style.display = "";
+    _sw.textContent = "当前通过明文 HTTP 访问：订阅只会包含本地 http/socks 入口，不含国家节点。国家节点需要 443 上的 TLS 反代（并转发 X-Forwarded-Proto: https），或在 config.json 设置 sub_server 后重启面板。";
   } else { _sw.style.display = "none"; }
   CURRENT_NODE = s.node || "";
   $("anyBtn").style.display = s.node ? "" : "none";
@@ -2627,8 +2630,23 @@ class Panel:
 
     @staticmethod
     def _request_is_https(req) -> bool:
-        proto = (req.headers.get("X-Forwarded-Proto") or req.scheme or "")
-        return proto.split(",")[0].strip().lower() == "https"
+        # 反代五花八门：nginx 常用 X-Forwarded-Proto，Apache/Caddy 还可能用
+        # Forwarded、X-Forwarded-Ssl、Front-End-Https。只认一个头会让「明明
+        # 是 https 进来的」被判成 http，订阅就退化成三个本地入口。
+        h = req.headers
+        proto = (h.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+        if proto == "https":
+            return True
+        fwd = (h.get("Forwarded") or "").lower()
+        if "proto=https" in fwd:
+            return True
+        if (h.get("X-Forwarded-Ssl") or "").strip().lower() == "on":
+            return True
+        if (h.get("Front-End-Https") or "").strip().lower() == "on":
+            return True
+        if (h.get("X-Url-Scheme") or "").strip().lower() == "https":
+            return True
+        return (req.scheme or "").lower() == "https"
 
     def _bridge_available(self, host: str, req=None) -> bool:
         """Whether to emit per-country vless nodes into the subscription.
@@ -3314,6 +3332,11 @@ class Panel:
                         "", text)
                     # 同时清掉组内对这些已删除代理的引用，避免悬空引用
                     text = text.replace(f'      - "{_dead}"\n', "")
+
+        else:
+            text = ("# 未生成国家节点：当前订阅通过明文 HTTP 或本机地址访问。\n"
+                    "# 国家节点固定使用 443/TLS，需改用 HTTPS 域名访问，或在\n"
+                    "# config.json 设置 sub_server 为公网域名后重启面板。\n") + text
 
         # ?provider=1：只留 proxies 段，给 mihomo 当 proxy-provider 用。
         # 完整配置（含 port/mode/rules）塞进 provider 会把客户端的端口和规则顶掉，

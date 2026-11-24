@@ -7,6 +7,21 @@
 扩展、油猴在同一版本区间内的号变写在条目的「组件版本」行里。
 当前快照见 [README](README.md) 顶部的表。
 
+## [0.5.16] — 2026-11-20
+
+组件版本：fxproxy `0.5.16` · Chrome 扩展 `1.2.5` · 油猴 `1.2.0`
+
+### 修复
+
+- 订阅只剩 http/socks5/DIRECT 三个入口时给出明确原因：明文 HTTP（或本机
+  地址）访问下不生成国家节点，因为国家节点固定走 443/TLS。订阅 YAML 顶部
+  会加注释，面板订阅卡片也会在 `http://` 访问时提示改用 HTTPS 或设置
+  `sub_server`。
+- 识别更多反代的 HTTPS 头：除 `X-Forwarded-Proto` 外，也认
+  `Forwarded: proto=https`、`X-Forwarded-Ssl: on`、`Front-End-Https: on`、
+  `X-Url-Scheme: https`，避免明明走 HTTPS 却因反代没设 `X-Forwarded-Proto`
+  而被判成明文、订阅退化。
+
 ## [0.5.15] — 2026-11-20
 
 组件版本：fxproxy `0.5.15` · Chrome 扩展 `1.2.5` · 油猴 `1.2.0`

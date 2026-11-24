@@ -922,10 +922,19 @@ async def main():
             y = await r.text()
             check("type: vless" not in y, "裸 HTTP 公网 Host 不生成 vless 节点")
             check('"fxproxy-http"' in y, "裸 HTTP 仍保留本地 http 入口")
+            check("未生成国家节点" in y, "裸 HTTP 订阅带原因注释")
             r = await cli.get("/clash.yaml", headers={
                 "Host": "example.com", "X-Forwarded-Proto": "https"})
             y = await r.text()
             check("type: vless" in y, "HTTPS 入口生成 vless 国家节点")
+            r = await cli.get("/clash.yaml", headers={
+                "Host": "example.com", "X-Forwarded-Ssl": "on"})
+            y = await r.text()
+            check("type: vless" in y, "X-Forwarded-Ssl 也识别为 HTTPS")
+            r = await cli.get("/clash.yaml", headers={
+                "Host": "example.com", "Forwarded": "for=1.2.3.4;proto=https"})
+            y = await r.text()
+            check("type: vless" in y, "Forwarded proto=https 也识别为 HTTPS")
             check('"fxproxy-http"' not in y, "HTTPS 模式移除本地 http 入口")
             r = await cli.get("/clash.yaml", headers={
                 "Host": "127.0.0.1", "X-Forwarded-Proto": "https"})
