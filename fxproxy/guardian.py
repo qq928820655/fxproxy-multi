@@ -347,6 +347,10 @@ class TokenPool:
         self._quota_cache: dict[int, tuple[float, dict]] = {}
         # 手动禁用的账号（按 refresh_token 哈希记，增删账号后索引平移也不丢）。
         self.disabled: set[str] = set()
+        # 账号级出口国家绑定：refresh_token -> 国家码。webui 可从
+        # config["account_countries"] 灌入；_open_tunnel 每连接读取。
+        # 注意：连接显式指定的国家优先于这里的绑定（见 _open_tunnel）。
+        self.countries: dict[str, str] = {}
         # One shared Session for the whole pool: fewer TCP/TLS handshakes.
         self._session = session or requests.Session()
         if session is None:

@@ -483,32 +483,34 @@ def test_proxy_splice_traffic():
 
 def test_per_connection_country():
     print("[proxy] 按连接国家路由（代理用户名）")
-    import asyncio
     import base64
     from fxproxy.proxyserver import (
-        ProxyServer, NodePicker, _country_from_proxy_auth)
+        NodePicker, _country_from_proxy_auth, _strip_proxy_auth)
 
     class _C:
         def nodes_by_country(self):
             return {"US": {"name": "US", "nodes": [("a", 1)]},
-                    "TH": {"name": "Thailand", "nodes": [("t", 2)]}}
+                    "TH": {"name": "Thailand", "nodes": [("t", 2)]},
+                    "JP": {"name": "Japan", "nodes": [("j", 3)]}}
 
     h = b"Proxy-Authorization: Basic " + base64.b64encode(b"TH:x") + b"\r\n"
     check(_country_from_proxy_auth(h) == "TH", "解析 Basic 用户名国家")
     h2 = b"Proxy-Authorization: Basic " + base64.b64encode(b"user:pass") + b"\r\n"
     check(_country_from_proxy_auth(h2) is None, "非两位国家码忽略")
+    check(_country_from_proxy_auth(b"Proxy-Authorization: Bearer xyz\r\n")
+          is None, "Bearer 不当作国家")
+    check(b"proxy-authorization" not in _strip_proxy_auth(
+        h + b"Host: x\r\n").lower(), "转发前剥掉代理鉴权头")
 
-    srv = ProxyServer(GuardianClient("t"), NodePicker(_C(), "US"))
-    srv.client = _C()
-    p = asyncio.run(srv._picker_for("TH"))
-    check(p.country == "TH", "TH 用独立 picker")
-    check(p._pool() == [("t", 2)], "TH picker 选到 TH 节点")
-    p2 = asyncio.run(srv._picker_for("TH"))
-    check(p2 is p, "同国家 picker 命中缓存")
-    p3 = asyncio.run(srv._picker_for("US"))
-    check(p3 is srv.picker, "与实例国家一致时复用默认 picker")
-    p4 = asyncio.run(srv._picker_for(""))
-    check(p4 is srv.picker, "空国家用默认 picker")
+    p = NodePicker(_C())
+    p.refresh()
+    check(p.pool_for("TH") == [("t", 2)], "pool_for 返回 TH 节点")
+    check(p.pool_for("JP") == [("j", 3)], "pool_for 返回 JP 节点")
+    check(p.pool_for("ZZ") is None, "未知国家返回 None")
+    check(p.pool_for("") is None, "空国家返回 None")
+    p2 = NodePicker(_C(), exclude={"t"})
+    p2.refresh()
+    check(p2.pool_for("TH") is None, "国家节点全被禁用时返回 None")
 
 
 def test_node_picker_exclude():

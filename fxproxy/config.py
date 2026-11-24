@@ -40,6 +40,9 @@ DEFAULTS = {
     "disabled_nodes": [],
     # 手动禁用的账号（refresh_token 哈希），禁用的账号不参与轮询/失败切换。
     "disabled_accounts": [],
+    # 账号级出口国家绑定：refresh_token -> 国家码（如 US/GB）。连接级
+    # 指定（代理用户名国家码）优先；未指定时按这里的绑定选出口国家。
+    "account_countries": {},
     # 面板登录：首次无 hash 时用默认密码 admin；改密后存 PBKDF2 哈希。
     # panel_secret 用来给会话 cookie 签名，随机生成后持久化，重启不掉登录。
     "panel_password_hash": "",

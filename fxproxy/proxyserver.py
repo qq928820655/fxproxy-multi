@@ -17,7 +17,6 @@ import re
 import socket
 import ssl
 import struct
-import time
 from typing import Optional
 
 from .guardian import GuardianClient, TokenPool
@@ -113,6 +112,23 @@ class NodePicker:
         random.shuffle(pool)
         return pool[:n]
 
+    def pool_for(self, country: Optional[str]) -> Optional[list[tuple[str, int]]]:
+        """Country-specific node pool for per-connection overrides.
+
+        Returns None when ``country`` is empty or not in the server list,
+        so callers can fall back to the default (global) preference.
+        """
+        c = (country or "").strip().upper()
+        if not c or not self._by_country:
+            return None
+        meta = self._by_country.get(c)
+        if not meta:
+            return None
+        pool = list(meta["nodes"])
+        if self.exclude:
+            pool = [(h, p) for h, p in pool if h not in self.exclude]
+        return pool or None
+
 
 class ProxyServer:
     def __init__(
@@ -142,38 +158,8 @@ class ProxyServer:
         # 每完成一条连接回调 (up, down) 字节数；面板用它把 8080/1080 的
         # 外部流量并入本地统计。为 None 时不统计（如测速临时实例）。
         self._on_traffic = None
-        # 按连接选国家：上游（如 seedance 网关）把国家码塞进代理 Basic 用户名
-        # （http://TH:x@127.0.0.1:8080），这里按国家缓存 NodePicker，避免每条
-        # 连接都重新拉一遍服务器列表。
-        self._country_pickers: dict[str, NodePicker] = {}
-        self._country_pickers_ts: dict[str, float] = {}
-
-    async def _picker_for(self, country: Optional[str]) -> NodePicker:
-        """Return a NodePicker for a per-connection country hint.
-
-        Empty/unknown country falls back to the instance picker, so existing
-        single-country deployments keep working unchanged.
-        """
-        cc = (country or "").strip().upper()
-        if not cc:
-            return self.picker
-        # 没有 pin 节点、且国家与当前 picker 一致时直接复用。
-        if not self.picker.node and (self.picker.country or "") == cc:
-            return self.picker
-        now = time.monotonic()
-        p = self._country_pickers.get(cc)
-        if p is not None and now - self._country_pickers_ts.get(cc, 0) < 300:
-            return p
-        p = NodePicker(self.client, cc,
-                       exclude=getattr(self.picker, "exclude", None))
-        try:
-            await asyncio.to_thread(p.refresh)
-        except Exception as e:
-            _log(f"按连接选国家 {cc} 失败，回退默认节点: {e!r}")
-            return self.picker
-        self._country_pickers[cc] = p
-        self._country_pickers_ts[cc] = now
-        return p
+        # 按国家码轮转计数器：同一国家的连接在节点池里顺序轮换，均匀摊流量
+        self._cc_off: dict[str, int] = {}
 
     # ---- egress address policy ---------------------------------------
     @staticmethod
@@ -256,11 +242,20 @@ class ProxyServer:
         and moves to the next one. Complexity: O(accounts × failover) attempts,
         bounded by the pool size to avoid one request hammering every account.
 
-        ``country`` comes from the client's proxy username (e.g. ``TH``); when
-        present the connection is pinned to that country's node pool.
+        ``country`` (per-connection override, e.g. from Proxy-Authorization
+        username or SOCKS5 username) narrows the node pool to one country for
+        this connection only; unknown codes fall back to the global preference.
+
+        出口国家优先级：连接级显式指定（代理用户名 / SOCKS 用户名）最高，
+        没有时用账号绑定（pool.countries：refresh_token -> 国家码）。连接要求
+        某国时，绑定了该国的账号优先被选中，其余账号按原顺序兜底。
         """
-        picker = await self._picker_for(country)
+        bindings = getattr(self.pool, "countries", None) or {}
         accounts = self.pool.pick_many(len(self.pool.clients))
+        if country:
+            want = country.upper()
+            accounts.sort(key=lambda p: 0 if bindings.get(
+                p[1].refresh_token, "").upper() == want else 1)
         last_err = None
         tried_nodes = 0
         for acct_idx, gc in accounts:
@@ -271,7 +266,19 @@ class ProxyServer:
                 self.pool.report_failure(gc)
                 _log(f"账号 #{acct_idx + 1} 取凭证失败（{e!r}），换下一个账号")
                 continue
-            nodes = picker.pick_many(self.failover)
+            bound = bindings.get(gc.refresh_token, "").strip().upper()
+            # 连接显式国家优先，避免账号级绑定覆盖上游按账号路由的请求。
+            want = (country or bound or "").strip().upper() or None
+            pool = self.picker.pool_for(want) if want else None
+            if pool:
+                off = self._cc_off.setdefault(want, 0)
+                nodes = [(pool + pool)[(off + i) % len(pool)]
+                         for i in range(self.failover)]
+                self._cc_off[want] = off + self.failover
+            else:
+                if want:
+                    _log(f"国家 {want} 不可用，退回全局节点池")
+                nodes = self.picker.pick_many(self.failover)
             for node_host, node_port in nodes:
                 tried_nodes += 1
                 try:
@@ -279,9 +286,7 @@ class ProxyServer:
                         node_host, node_port, target_host, target_port, jwt
                     )
                     # 出口已确立：记录实际使用的节点，供面板显示国家
-                    picker.last_host = node_host
-                    if picker is not self.picker:
-                        self.picker.last_host = node_host
+                    self.picker.last_host = node_host
                     return (*conn, gc)
                 except AccountAuthFailure as e:
                     # 账号级失败：冷却账号，不再试这个账号的其它节点
@@ -390,13 +395,10 @@ class ProxyServer:
                     await writer.drain()
                     writer.close()
                     return
-                # rebuild origin-form request for upstream target, stripping
-                # the proxy-only auth header so it isn't leaked to the site.
+                # rebuild origin-form request for upstream target
+                # （剥掉代理专用头，别把 Proxy-Authorization 泄给目标站）
                 first = f"{method} {rest} HTTP/1.1\r\n".encode()
-                hdr_lines = [ln for ln in headers.split(b"\r\n")
-                             if ln and not ln.lower().startswith(
-                                 b"proxy-authorization:")]
-                initial = first + b"\r\n".join(hdr_lines) + b"\r\n\r\n"
+                initial = first + _strip_proxy_auth(headers)
                 await self._connect_and_splice(
                     host, target_port, reader, writer, client_ack=False,
                     initial=initial, country=country
@@ -437,9 +439,25 @@ class ProxyServer:
                 writer.close()
                 return
             nmethods = (await reader.readexactly(1))[0]
-            await reader.readexactly(nmethods)
-            writer.write(b"\x05\x00")  # no auth
-            await writer.drain()
+            methods = await reader.readexactly(nmethods)
+            # 用户名/密码子协商（RFC 1929）：用户名=国家码（如 US、GB），密码忽略。
+            # 没有 0x02 或客户端只支持 0x00 时按匿名处理（全局国家）。
+            country = None
+            if 0x02 in methods:
+                writer.write(b"\x05\x02")
+                await writer.drain()
+                await reader.readexactly(1)  # sub-negotiation version
+                ulen = (await reader.readexactly(1))[0]
+                uname = (await reader.readexactly(ulen)).decode(errors="replace")
+                plen = (await reader.readexactly(1))[0]
+                await reader.readexactly(plen)
+                if re.fullmatch(r"[A-Za-z]{2}", uname or ""):
+                    country = uname.upper()
+                writer.write(b"\x01\x00")
+                await writer.drain()
+            else:
+                writer.write(b"\x05\x00")
+                await writer.drain()
 
             # request
             hdr = await reader.readexactly(4)
@@ -463,7 +481,8 @@ class ProxyServer:
             port = struct.unpack("!H", await reader.readexactly(2))[0]
 
             try:
-                u_reader, u_writer, leftover, node, gc = await self._open_tunnel(host, port)
+                u_reader, u_writer, leftover, node, gc = await self._open_tunnel(
+                    host, port, country=country)
             except Exception as e:
                 writer.write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
                 await writer.drain()
@@ -568,26 +587,37 @@ def _parse_absolute(uri: str):
 
 
 def _country_from_proxy_auth(headers: bytes) -> Optional[str]:
-    """Extract a 2-letter country code from the proxy Basic-auth username.
+    """从请求头里解析每连接国家覆盖。
 
-    Upstream clients (seedance gateway) bind each account to an egress
-    country by connecting as ``http://TH:x@host:port``. The password is
-    ignored; only a 2-letter username is treated as a country hint.
+    约定：``Proxy-Authorization: Basic base64(国家码:任意)``，用户名为两位
+    国家码（US / GB / DE…）。其余形式（含 Bearer）一律返回 None，走全局配置。
     """
-    for line in headers.split(b"\r\n"):
-        low = line.lower()
-        if not low.startswith(b"proxy-authorization:"):
+    for line in headers.split(b"\n"):
+        line = line.strip()
+        if not line.lower().startswith(b"proxy-authorization:"):
             continue
-        val = line.split(b":", 1)[1].strip()
-        if not val.lower().startswith(b"basic "):
-            return None
+        val = line.split(b":", 1)[1].strip().decode(errors="replace")
+        if not val.lower().startswith("basic "):
+            continue
         try:
-            dec = base64.b64decode(val[6:].strip()).decode("latin-1")
+            raw = base64.b64decode(val[6:].strip()).decode(errors="replace")
         except Exception:
-            return None
-        user = dec.split(":", 1)[0].strip().upper()
-        return user if re.fullmatch(r"[A-Z]{2}", user) else None
+            continue
+        user = raw.partition(":")[0]
+        if re.fullmatch(r"[A-Za-z]{2}", user or ""):
+            return user.upper()
     return None
+
+
+def _strip_proxy_auth(headers: bytes) -> bytes:
+    """转发给目标站之前剥掉 Proxy-Authorization 行（普通 HTTP 代理路径用）。"""
+    out, dropped = [], False
+    for line in headers.split(b"\n"):
+        if line.strip().lower().startswith(b"proxy-authorization:"):
+            dropped = True
+            continue
+        out.append(line)
+    return b"".join(out) if dropped else headers
 
 
 def _log(msg: str):

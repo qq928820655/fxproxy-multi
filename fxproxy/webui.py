@@ -1568,6 +1568,16 @@ class Panel:
             self._save_traffic()
         return local_now
 
+    def _apply_pool_cfg(self, pool):
+        """把配置里的禁用账号/账号国家绑定灌进新建的 TokenPool。"""
+        if pool is None:
+            return None
+        pool.set_disabled(self.cfg.get("disabled_accounts"))
+        cc = self.cfg.get("account_countries") or {}
+        pool.countries = {str(k): str(v).strip().upper()
+                          for k, v in cc.items() if k and v}
+        return pool
+
     def _make_pool(self) -> TokenPool:
         tokens = self.cfg.get("refresh_tokens") or []
         if not tokens:
@@ -1578,8 +1588,7 @@ class Panel:
             cooldown=self.cfg.get("cooldown_seconds", 300),
             quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60),
         )
-        pool.set_disabled(self.cfg.get("disabled_accounts"))
-        return pool
+        return self._apply_pool_cfg(pool)
 
     def _persist(self):
         """Sync the live pool back into config and save."""
@@ -2558,12 +2567,12 @@ class Panel:
 
                 if self.pool is None:
                     # 全部验证通过后才建池，避免用空 token 列表触发 ValueError
-                    self.pool = TokenPool(
+                    self.pool = self._apply_pool_cfg(TokenPool(
                         new_tokens,
                         strategy=self.cfg.get("pool_strategy", "round-robin"),
                         cooldown=self.cfg.get("cooldown_seconds", 300),
                         quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60),
-                    )
+                    ))
                 else:
                     for rt in new_tokens:
                         try:
@@ -2612,11 +2621,11 @@ class Panel:
             if self.pool is None:
                 self.pool = self._make_pool()
             if self.pool is None:
-                self.pool = TokenPool(
+                self.pool = self._apply_pool_cfg(TokenPool(
                     [rt],
                     cooldown=self.cfg.get("cooldown_seconds", 300),
                     quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60),
-                )
+                ))
                 action = "added"
             else:
                 # 让已有账号补全 uid，才能把“同账号新凭证”识别为更新
