@@ -9,12 +9,15 @@ in both directions.
 from __future__ import annotations
 
 import asyncio
+import base64
 import errno
 import ipaddress
 import random
+import re
 import socket
 import ssl
 import struct
+import time
 from typing import Optional
 
 from .guardian import GuardianClient, TokenPool
@@ -139,6 +142,38 @@ class ProxyServer:
         # 每完成一条连接回调 (up, down) 字节数；面板用它把 8080/1080 的
         # 外部流量并入本地统计。为 None 时不统计（如测速临时实例）。
         self._on_traffic = None
+        # 按连接选国家：上游（如 seedance 网关）把国家码塞进代理 Basic 用户名
+        # （http://TH:x@127.0.0.1:8080），这里按国家缓存 NodePicker，避免每条
+        # 连接都重新拉一遍服务器列表。
+        self._country_pickers: dict[str, NodePicker] = {}
+        self._country_pickers_ts: dict[str, float] = {}
+
+    async def _picker_for(self, country: Optional[str]) -> NodePicker:
+        """Return a NodePicker for a per-connection country hint.
+
+        Empty/unknown country falls back to the instance picker, so existing
+        single-country deployments keep working unchanged.
+        """
+        cc = (country or "").strip().upper()
+        if not cc:
+            return self.picker
+        # 没有 pin 节点、且国家与当前 picker 一致时直接复用。
+        if not self.picker.node and (self.picker.country or "") == cc:
+            return self.picker
+        now = time.monotonic()
+        p = self._country_pickers.get(cc)
+        if p is not None and now - self._country_pickers_ts.get(cc, 0) < 300:
+            return p
+        p = NodePicker(self.client, cc,
+                       exclude=getattr(self.picker, "exclude", None))
+        try:
+            await asyncio.to_thread(p.refresh)
+        except Exception as e:
+            _log(f"按连接选国家 {cc} 失败，回退默认节点: {e!r}")
+            return self.picker
+        self._country_pickers[cc] = p
+        self._country_pickers_ts[cc] = now
+        return p
 
     # ---- egress address policy ---------------------------------------
     @staticmethod
@@ -211,7 +246,8 @@ class ProxyServer:
         leftover = head.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in head else b""
         return reader, writer, leftover, node_host
 
-    async def _open_tunnel(self, target_host: str, target_port: int):
+    async def _open_tunnel(self, target_host: str, target_port: int,
+                           country: Optional[str] = None):
         """Open a tunnel with two-level failover: accounts × nodes.
 
         The pool picks an account order (strategy-dependent). For each account
@@ -219,7 +255,11 @@ class ProxyServer:
         just rotates nodes; an auth failure (401/403) cools down that account
         and moves to the next one. Complexity: O(accounts × failover) attempts,
         bounded by the pool size to avoid one request hammering every account.
+
+        ``country`` comes from the client's proxy username (e.g. ``TH``); when
+        present the connection is pinned to that country's node pool.
         """
+        picker = await self._picker_for(country)
         accounts = self.pool.pick_many(len(self.pool.clients))
         last_err = None
         tried_nodes = 0
@@ -231,7 +271,7 @@ class ProxyServer:
                 self.pool.report_failure(gc)
                 _log(f"账号 #{acct_idx + 1} 取凭证失败（{e!r}），换下一个账号")
                 continue
-            nodes = self.picker.pick_many(self.failover)
+            nodes = picker.pick_many(self.failover)
             for node_host, node_port in nodes:
                 tried_nodes += 1
                 try:
@@ -239,7 +279,9 @@ class ProxyServer:
                         node_host, node_port, target_host, target_port, jwt
                     )
                     # 出口已确立：记录实际使用的节点，供面板显示国家
-                    self.picker.last_host = node_host
+                    picker.last_host = node_host
+                    if picker is not self.picker:
+                        self.picker.last_host = node_host
                     return (*conn, gc)
                 except AccountAuthFailure as e:
                     # 账号级失败：冷却账号，不再试这个账号的其它节点
@@ -331,10 +373,15 @@ class ProxyServer:
                 if line in (b"\r\n", b"", b"\n"):
                     break
 
+            # 按连接选国家：上游把国家码放进代理用户名（http://TH:x@...）。
+            country = _country_from_proxy_auth(headers)
+
             if method.upper() == "CONNECT":
                 host, _, port = uri.partition(":")
                 target_port = int(port or 443)
-                await self._connect_and_splice(host, target_port, reader, writer, client_ack=True)
+                await self._connect_and_splice(
+                    host, target_port, reader, writer, client_ack=True,
+                    country=country)
             else:
                 # absolute-form: http://host[:port]/path
                 host, target_port, rest = _parse_absolute(uri)
@@ -343,11 +390,16 @@ class ProxyServer:
                     await writer.drain()
                     writer.close()
                     return
-                # rebuild origin-form request for upstream target
+                # rebuild origin-form request for upstream target, stripping
+                # the proxy-only auth header so it isn't leaked to the site.
                 first = f"{method} {rest} HTTP/1.1\r\n".encode()
-                initial = first + headers
+                hdr_lines = [ln for ln in headers.split(b"\r\n")
+                             if ln and not ln.lower().startswith(
+                                 b"proxy-authorization:")]
+                initial = first + b"\r\n".join(hdr_lines) + b"\r\n\r\n"
                 await self._connect_and_splice(
-                    host, target_port, reader, writer, client_ack=False, initial=initial
+                    host, target_port, reader, writer, client_ack=False,
+                    initial=initial, country=country
                 )
         except Exception as e:
             try:
@@ -363,9 +415,10 @@ class ProxyServer:
                 pass
 
     async def _connect_and_splice(
-        self, host, port, c_reader, c_writer, client_ack, initial=b""
+        self, host, port, c_reader, c_writer, client_ack, initial=b"", country=None
     ):
-        u_reader, u_writer, leftover, node, gc = await self._open_tunnel(host, port)
+        u_reader, u_writer, leftover, node, gc = await self._open_tunnel(
+            host, port, country=country)
         if client_ack:
             c_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await c_writer.drain()
@@ -512,6 +565,29 @@ def _parse_absolute(uri: str):
     path = "/" + path
     host, _, port = authority.partition(":")
     return host, int(port) if port else (443 if scheme == "https" else 80), path
+
+
+def _country_from_proxy_auth(headers: bytes) -> Optional[str]:
+    """Extract a 2-letter country code from the proxy Basic-auth username.
+
+    Upstream clients (seedance gateway) bind each account to an egress
+    country by connecting as ``http://TH:x@host:port``. The password is
+    ignored; only a 2-letter username is treated as a country hint.
+    """
+    for line in headers.split(b"\r\n"):
+        low = line.lower()
+        if not low.startswith(b"proxy-authorization:"):
+            continue
+        val = line.split(b":", 1)[1].strip()
+        if not val.lower().startswith(b"basic "):
+            return None
+        try:
+            dec = base64.b64decode(val[6:].strip()).decode("latin-1")
+        except Exception:
+            return None
+        user = dec.split(":", 1)[0].strip().upper()
+        return user if re.fullmatch(r"[A-Z]{2}", user) else None
+    return None
 
 
 def _log(msg: str):

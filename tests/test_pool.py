@@ -481,6 +481,36 @@ def test_proxy_splice_traffic():
     check(got == [(110, 300)], "up=leftover+客户端字节, down=服务端字节")
 
 
+def test_per_connection_country():
+    print("[proxy] 按连接国家路由（代理用户名）")
+    import asyncio
+    import base64
+    from fxproxy.proxyserver import (
+        ProxyServer, NodePicker, _country_from_proxy_auth)
+
+    class _C:
+        def nodes_by_country(self):
+            return {"US": {"name": "US", "nodes": [("a", 1)]},
+                    "TH": {"name": "Thailand", "nodes": [("t", 2)]}}
+
+    h = b"Proxy-Authorization: Basic " + base64.b64encode(b"TH:x") + b"\r\n"
+    check(_country_from_proxy_auth(h) == "TH", "解析 Basic 用户名国家")
+    h2 = b"Proxy-Authorization: Basic " + base64.b64encode(b"user:pass") + b"\r\n"
+    check(_country_from_proxy_auth(h2) is None, "非两位国家码忽略")
+
+    srv = ProxyServer(GuardianClient("t"), NodePicker(_C(), "US"))
+    srv.client = _C()
+    p = asyncio.run(srv._picker_for("TH"))
+    check(p.country == "TH", "TH 用独立 picker")
+    check(p._pool() == [("t", 2)], "TH picker 选到 TH 节点")
+    p2 = asyncio.run(srv._picker_for("TH"))
+    check(p2 is p, "同国家 picker 命中缓存")
+    p3 = asyncio.run(srv._picker_for("US"))
+    check(p3 is srv.picker, "与实例国家一致时复用默认 picker")
+    p4 = asyncio.run(srv._picker_for(""))
+    check(p4 is srv.picker, "空国家用默认 picker")
+
+
 def test_node_picker_exclude():
     print("[nodes] 禁用节点从选择池排除")
     from fxproxy.proxyserver import NodePicker
@@ -513,6 +543,7 @@ if __name__ == "__main__":
     test_runtime_user_agent()
     test_fpn_401_selfheal_and_ua()
     test_proxy_splice_traffic()
+    test_per_connection_country()
     test_node_picker_exclude()
     test_update_flow()
     test_pool_round_robin()
