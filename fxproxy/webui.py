@@ -923,7 +923,8 @@ async function loadAccounts(){
   try{
     const r = await timeoutFetch("/api/accounts", null, 25000); const d = await r.json();
     const rows = (d.accounts||[]).map((a,i)=>{
-      let st = a.ok ? '<span class="pill on">可用</span>'
+      let st = a.disabled ? '<span class="pill off">已禁用</span>'
+             : a.ok ? '<span class="pill on">可用</span>'
                     : (a.cooling ? '<span class="pill cool">冷却</span>'
                                  : '<span class="pill off">异常</span>');
       // 进度条按"剩余占比"画；只有额度已知才有意义
@@ -949,7 +950,7 @@ async function loadAccounts(){
         `<td class="mail" colspan="2" data-l="#">#${i+1} ${a.email||'<span class="muted">—</span>'}</td>
         <td data-l="uid">${a.uid||"—"}</td><td data-l="状态">${st}</td>
         <td class="quota" data-l="已用 / 月度">${rem}<div class="bar"><i style="width:${pct}%"></i></div>${localTxt}</td>
-        <td data-l="操作"><button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
+        <td data-l="操作"><button class="sm ${a.disabled?'primary':''}" onclick="toggleAcct(${i}, ${a.disabled?'false':'true'})">${a.disabled?'启用':'禁用'}</button> <button class="danger sm" onclick="removeAcct(${i})">删除</button></td></tr>`;
     });
     $("acctBody").innerHTML = rows.join("") || '<tr><td colspan="7" class="muted">无账号</td></tr>';
     ACCT_TOTAL = (d.accounts||[]).length;
@@ -1018,6 +1019,13 @@ $("browserBtn").onclick = () => {
 // 账号池右上角的入口：任何时候都能打开添加框，加完再收起
 $("addToggle").onclick = () => setAddOpen($("loginCard").style.display === "none");
 $("addClose").onclick = () => setAddOpen(false);
+async function toggleAcct(i, disabled){
+  const r = await fetch("/api/account/disable",{method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({index:i, disabled:disabled})});
+  const d = await r.json();
+  if(d.error) alert("操作失败："+d.error);
+  await loadAccounts(); await loadState();
+}
 async function removeAcct(i){
   if(!confirm("删除账号 #"+(i+1)+"？该操作立即生效。")) return;
   const r = await fetch("/api/account/remove",{method:"POST",
@@ -1564,12 +1572,14 @@ class Panel:
         tokens = self.cfg.get("refresh_tokens") or []
         if not tokens:
             return None
-        return TokenPool(
+        pool = TokenPool(
             tokens,
             strategy=self.cfg.get("pool_strategy", "round-robin"),
             cooldown=self.cfg.get("cooldown_seconds", 300),
             quota_cache_ttl=self.cfg.get("quota_cache_ttl", 60),
         )
+        pool.set_disabled(self.cfg.get("disabled_accounts"))
+        return pool
 
     def _persist(self):
         """Sync the live pool back into config and save."""
@@ -1868,6 +1878,7 @@ class Panel:
         for i, (c, q) in enumerate(zip(self.pool.clients, snaps)):
             row = dict(q)
             row["cooling"] = self.pool._cool_until.get(i, 0) > now
+            row["disabled"] = self.pool.is_disabled(i)
             # 邮箱和 uid 跟额度状态无关：451 拿不到 quota 时也要显示
             # 导入时从导出 JSON 带过来的值。缓存为空且额度正常才查 profile。
             row["email"] = (getattr(c, "_email", None)
@@ -1990,6 +2001,33 @@ class Panel:
             return web.json_response({"ok": True, "account_count": len(self.pool.clients)})
         except Exception as e:
             return web.json_response({"error": str(e)})
+
+    async def api_account_disable(self, req):
+        """启用/禁用一个账号。禁用后不参与轮询与失败切换，但保留在池中。"""
+        try:
+            body = await req.json()
+        except Exception:
+            body = {}
+        try:
+            idx = int(body.get("index", -1))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "index 无效"})
+        if self.pool is None:
+            return web.json_response({"error": "无账号"})
+        if not 0 <= idx < len(self.pool.clients):
+            return web.json_response({"error": "账号不存在"})
+        disabled = bool(body.get("disabled"))
+        key = TokenPool.acct_key(self.pool.clients[idx].refresh_token)
+        cur = [str(k) for k in (self.cfg.get("disabled_accounts") or []) if k]
+        if disabled:
+            if key not in cur:
+                cur.append(key)
+        else:
+            cur = [k for k in cur if k != key]
+        self.cfg["disabled_accounts"] = cur
+        self.pool.set_disabled(cur)
+        await asyncio.to_thread(self._persist)
+        return web.json_response({"ok": True, "disabled": disabled})
 
     async def api_strategy(self, req):
         try:
@@ -3506,6 +3544,7 @@ def run_web(config_path=None, web_host="127.0.0.1", web_port=8765, open_browser=
         web.post("/api/accounts/refresh", panel.api_accounts_refresh),
         web.post("/api/accounts/export", panel.api_accounts_export),
         web.post("/api/account/remove", panel.api_account_remove),
+        web.post("/api/account/disable", panel.api_account_disable),
         web.post("/api/strategy", panel.api_strategy),
         web.post("/api/force-ipv4", panel.api_force_ipv4),
         web.post("/api/runtime-ua", panel.api_runtime_ua),

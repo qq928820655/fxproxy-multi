@@ -140,6 +140,24 @@ def test_pool_cooldown_all():
     check(len(pool.pick_many(2)) == 2, "全冷却仍返回全部账号（避免服务中断）")
 
 
+def test_pool_disabled_accounts():
+    print("[pool] 手动禁用账号不参与选择")
+    pool = TokenPool(["t1", "t2", "t3"], strategy="round-robin")
+    pool.set_disabled({TokenPool.acct_key("t2")})
+    picked = [pool.pick()[0] for _ in range(6)]
+    check(1 not in picked, f"禁用 #2 后不再被选中 {picked}")
+    check(set(picked) == {0, 2}, "只轮转未禁用账号")
+    pool.set_disabled({TokenPool.acct_key(t) for t in ("t1", "t2", "t3")})
+    check(pool.pick_many(3) == [], "全部禁用时返回空（不兜底）")
+    try:
+        pool.pick()
+        check(False, "全部禁用 pick 应报错")
+    except RuntimeError:
+        check(True, "全部禁用 pick 报错")
+    pool.set_disabled(set())
+    check(len(pool.pick_many(3)) == 3, "恢复后重新参与")
+
+
 def test_pool_add_remove():
     print("[pool] 账号增删")
     pool = TokenPool(["t1"])
@@ -500,6 +518,7 @@ if __name__ == "__main__":
     test_pool_round_robin()
     test_pool_failover()
     test_pool_cooldown_all()
+    test_pool_disabled_accounts()
     test_pool_add_remove()
     test_upsert_by_uid()
     test_pool_quota_weight()

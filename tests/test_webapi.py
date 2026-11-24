@@ -703,6 +703,32 @@ async def main():
             d = await r.json()
             check("无账号" in d.get("error", ""), "空池非 None 启动: 友好错误而非 IndexError")
 
+    print("[api] 账号启用/禁用")
+    with tempfile.TemporaryDirectory() as d:
+        cfgpath = Path(d) / "acctdisable.json"
+        cfgpath.write_text(json.dumps({
+            "refresh_tokens": ["t1", "t2", "t3"],
+        }), encoding="utf-8")
+        panel = Panel(str(cfgpath))
+        app = web.Application()
+        app.add_routes([web.post("/api/account/disable",
+                                 panel.api_account_disable)])
+        async with TestClient(TestServer(app)) as cli:
+            r = await cli.post("/api/account/disable",
+                               json={"index": 1, "disabled": True})
+            check((await r.json()).get("ok"), "禁用账号成功")
+            check(panel.pool.is_disabled(1), "pool 标记 #2 已禁用")
+            saved = json.loads(cfgpath.read_text(encoding="utf-8"))
+            check(guardian.TokenPool.acct_key("t2")
+                  in (saved.get("disabled_accounts") or []),
+                  "落盘 disabled_accounts")
+            picked = [panel.pool.pick()[0] for _ in range(6)]
+            check(1 not in picked, "禁用账号不再被选中")
+            r = await cli.post("/api/account/disable",
+                               json={"index": 1, "disabled": False})
+            check((await r.json()).get("ok") and not panel.pool.is_disabled(1),
+                  "重新启用成功")
+
     print("[api] 更新/重启后恢复上次运行状态")
     with tempfile.TemporaryDirectory() as d:
         cfgpath = Path(d) / "restore.json"

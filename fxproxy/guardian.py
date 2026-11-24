@@ -11,6 +11,7 @@ local proxy presents to a Fastly node via ``Proxy-Authorization: Bearer``.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import random
 import threading
@@ -344,6 +345,8 @@ class TokenPool:
         self._rr = itertools.count()
         self._cool_until: dict[int, float] = {}     # client index -> monotonic deadline
         self._quota_cache: dict[int, tuple[float, dict]] = {}
+        # 手动禁用的账号（按 refresh_token 哈希记，增删账号后索引平移也不丢）。
+        self.disabled: set[str] = set()
         # One shared Session for the whole pool: fewer TCP/TLS handshakes.
         self._session = session or requests.Session()
         if session is None:
@@ -356,6 +359,23 @@ class TokenPool:
     @property
     def tokens(self) -> list[str]:
         return [c.refresh_token for c in self.clients]
+
+    @staticmethod
+    def acct_key(token: str) -> str:
+        """Stable per-account key: sha1(refresh_token)[:16]."""
+        tok = (token or "").strip()
+        return hashlib.sha1(tok.encode()).hexdigest()[:16] if tok else ""
+
+    def set_disabled(self, keys) -> None:
+        """Set the disabled-account key set (does not remove accounts)."""
+        with self._lock:
+            self.disabled = {str(k) for k in (keys or []) if k}
+
+    def is_disabled(self, index: int) -> bool:
+        with self._lock:
+            if not 0 <= index < len(self.clients):
+                return False
+            return self.acct_key(self.clients[index].refresh_token) in self.disabled
 
     def add(self, token: str) -> int:
         token = (token or "").strip()
@@ -441,15 +461,22 @@ class TokenPool:
     def _healthy(self) -> list[int]:
         now = time.monotonic()
         with self._lock:
-            out = [i for i in range(len(self.clients))
-                   if self._cool_until.get(i, 0) <= now]
-            # All cooling -> use everyone rather than refusing service.
-            return out or list(range(len(self.clients)))
+            # 手动禁用的账号不参与选择，也不参与「全部冷却」时的兜底。
+            enabled = [i for i in range(len(self.clients))
+                       if self.acct_key(self.clients[i].refresh_token)
+                       not in self.disabled]
+            if not enabled:
+                return []
+            out = [i for i in enabled if self._cool_until.get(i, 0) <= now]
+            # All enabled accounts cooling -> use them rather than refusing.
+            return out or enabled
 
     def pick(self) -> tuple[int, GuardianClient]:
         """Choose one account. Returns ``(index, client)``."""
         with self._lock:
             healthy = self._healthy()
+            if not healthy:
+                raise RuntimeError("所有账号已禁用")
             if self.strategy == "failover":
                 idx = healthy[0]
             elif self.strategy == "quota":
@@ -464,6 +491,8 @@ class TokenPool:
         """Up to n distinct accounts for cross-account failover."""
         with self._lock:
             healthy = self._healthy()
+            if not healthy:
+                return []
             order: list[int]
             if self.strategy == "quota":
                 # Best first, then the rest in current pool order.
