@@ -513,6 +513,54 @@ def test_per_connection_country():
     check(p2.pool_for("TH") is None, "国家节点全被禁用时返回 None")
 
 
+def test_open_tunnel_country_precedence():
+    print("[proxy] 连接国家优先于账号绑定（未绑定账号也能服务任意国家）")
+    import asyncio
+    from fxproxy.proxyserver import ProxyServer, NodePicker
+
+    class _C:
+        def nodes_by_country(self):
+            return {"US": {"name": "US", "nodes": [("us", 1)]},
+                    "GB": {"name": "GB", "nodes": [("gb", 2)]},
+                    "TH": {"name": "Thailand", "nodes": [("th", 3)]}}
+
+    fc = _C()
+    picker = NodePicker(fc)
+    picker.refresh()
+    pool = TokenPool(["t1", "t2", "t3"])
+    # #1=US、#2=GB、#3 未绑定
+    pool.countries = {"t1": "US", "t2": "GB"}
+    srv = ProxyServer(pool, picker)
+    srv.client = fc
+    for c in pool.clients:
+        c.proxy_pass = lambda: "jwt"
+
+    used = []
+
+    class _W:
+        def write(self, b):
+            pass
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
+
+    async def fake_connect(node_host, node_port, target_host, target_port, jwt):
+        used.append(node_host)
+        return (object(), _W(), b"", node_host)
+
+    srv._connect_one = fake_connect
+
+    async def run():
+        return await srv._open_tunnel("h", 443, country="TH")
+
+    _, _, _, node, _ = asyncio.run(run())
+    check(node == "th", "连接国家 TH 生效")
+    check(all(h == "th" for h in used), f"所有账号（含未绑定 #3）都走 TH {used}")
+
+
 def test_node_picker_exclude():
     print("[nodes] 禁用节点从选择池排除")
     from fxproxy.proxyserver import NodePicker
@@ -546,6 +594,7 @@ if __name__ == "__main__":
     test_fpn_401_selfheal_and_ua()
     test_proxy_splice_traffic()
     test_per_connection_country()
+    test_open_tunnel_country_precedence()
     test_node_picker_exclude()
     test_update_flow()
     test_pool_round_robin()

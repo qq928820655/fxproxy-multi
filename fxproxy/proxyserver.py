@@ -277,7 +277,10 @@ class ProxyServer:
                 self._cc_off[want] = off + self.failover
             else:
                 if want:
-                    _log(f"国家 {want} 不可用，退回全局节点池")
+                    # 这是「请求的国家不在服务器列表 / 节点全被禁用」，
+                    # 不是账号没绑定国家；未绑定账号会用连接请求的国家。
+                    _log(f"国家 {want} 不在服务器列表或节点全禁用"
+                         f"（账号 #{acct_idx + 1}），退回全局节点池")
                 nodes = self.picker.pick_many(self.failover)
             for node_host, node_port in nodes:
                 tried_nodes += 1
