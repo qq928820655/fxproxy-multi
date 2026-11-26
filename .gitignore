@@ -29,3 +29,6 @@ tools/.crx-key.pem
 
 # 项目本地记忆（工具目录，不进仓库）
 .workbuddy/
+
+# 运行统计，勿提交
+traffic.json
